@@ -1,7 +1,9 @@
 <app-settings-menu
   [isProcessing]="isProcessing"
   [micTestStatus]="micTestStatus"
-  (testMicrophone)="recognizeNote()">
+  [mostrarPrivacidadeAnuncios]="!!(anuncios.precisaOpcoesPrivacidade$ | async)"
+  (testMicrophone)="recognizeNote()"
+  (privacidadeAnuncios)="anuncios.abrirOpcoesPrivacidade()">
 </app-settings-menu>
 
 <div id="main-content" class="ion-page">
@@ -58,4 +60,8 @@
       </app-voice-action>
     </div>
   </ion-content>
+
+  <ion-footer class="ion-no-border rodape-home">
+    <app-rodape-empresa compacto></app-rodape-empresa>
+  </ion-footer>
 </div>

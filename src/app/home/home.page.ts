@@ -1,4 +1,4 @@
-import { Component, NgZone } from '@angular/core';
+import { Component, NgZone, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   IonHeader,
@@ -8,6 +8,7 @@ import {
   IonAlert,
   IonMenuButton,
   IonButtons,
+  IonFooter,
 } from '@ionic/angular/standalone';
 import { addIcons } from 'ionicons';
 import { mic, save } from 'ionicons/icons';
@@ -23,6 +24,8 @@ import { VoiceActionComponent } from './components/voice-action/voice-action.com
 import { SettingsMenuComponent } from './components/settings-menu/settings-menu.component';
 import { VoiceCommandsService, VoiceCommandMatch } from '../services/voice-commands.service';
 import { WeatherService } from '../services/weather.service';
+import { AnunciosService } from '../services/anuncios.service';
+import { RodapeEmpresaComponent } from '../compartilhado/rodape-empresa/rodape-empresa.component';
 
 @Component({
   selector: 'app-home',
@@ -37,14 +40,18 @@ import { WeatherService } from '../services/weather.service';
     IonAlert,
     IonMenuButton,
     IonButtons,
+    IonFooter,
     BrandHeaderComponent,
     StatusPanelComponent,
     SaveBannerComponent,
     VoiceActionComponent,
     SettingsMenuComponent,
+    RodapeEmpresaComponent,
   ],
 })
 export class HomePage {
+  readonly anuncios = inject(AnunciosService);
+
   isProcessing = false;
   recognizedNote: string | null = null;
   recognizedCommand: string | null = null;
@@ -75,6 +82,11 @@ export class HomePage {
     private weatherService: WeatherService
   ) {
     addIcons({ mic, save });
+  }
+
+  /** Banner do AdMob só nas telas internas (nunca na abertura). */
+  ionViewDidEnter() {
+    this.anuncios.mostrarBanner();
   }
 
   async recognizeNote() {

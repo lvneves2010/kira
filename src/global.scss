@@ -32,16 +32,12 @@
  * https://ionicframework.com/docs/theming/dark-mode
  */
 
-.global-app-version {
-	position: fixed;
-	bottom: 6px;
-	left: 0;
-	right: 0;
-	text-align: center;
-	color: rgba(255,255,255,0.75);
-	font-size: 0.85rem;
-	pointer-events: none;
-	z-index: 1000;
+/* Banner do AdMob: é nativo e fica por cima da WebView, então o app sobe
+   a altura dele (gravada em --altura-anuncio pelo AnunciosService). */
+html.com-anuncio ion-app {
+	margin-bottom: calc(
+		var(--altura-anuncio, 0px) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))
+	);
 }
 
 /* @import "@ionic/angular/css/palettes/dark.always.css"; */

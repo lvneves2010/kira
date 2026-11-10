@@ -1,6 +1,6 @@
-import { Component } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { IonApp, IonRouterOutlet } from '@ionic/angular/standalone';
-import pkg from '../../package.json';
+import { AnunciosService } from './services/anuncios.service';
 
 @Component({
   selector: 'app-root',
@@ -8,7 +8,8 @@ import pkg from '../../package.json';
   imports: [IonApp, IonRouterOutlet],
 })
 export class AppComponent {
-  appVersion = pkg.version ?? '0.0.0';
-
-  constructor() {}
+  constructor() {
+    // Consentimento UMP + SDK do AdMob em segundo plano, enquanto a abertura aparece.
+    inject(AnunciosService).iniciar();
+  }
 }

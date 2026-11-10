@@ -36,5 +36,9 @@ export class SettingsMenuComponent {
   @Input() isProcessing = false;
   @Input() micTestStatus = '';
 
+  /** O formulário de privacidade do AdMob (UMP) só aparece quando a região exige. */
+  @Input() mostrarPrivacidadeAnuncios = false;
+
   @Output() testMicrophone = new EventEmitter<void>();
+  @Output() privacidadeAnuncios = new EventEmitter<void>();
 }

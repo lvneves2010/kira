@@ -31,3 +31,13 @@ ion-content.home-content {
   font-size: 1.05rem;
   line-height: 1.75;
 }
+
+/* Rodapé HSI compacto (logo + versão), no mesmo fundo do conteúdo */
+ion-footer.rodape-home {
+  background: #152748;
+  padding-bottom: env(safe-area-inset-bottom);
+
+  app-rodape-empresa {
+    --ion-color-medium: #d6e0ff;
+  }
+}
