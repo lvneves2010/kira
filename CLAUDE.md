@@ -4,6 +4,14 @@ Assistente virtual por voz para Android, da **Help Soluções em Informática (H
 
 - Repo: https://github.com/lvneves2010/kira. Antes se chamava `play-it-right`, e o projeto já se chamou "Jarvis" e "Play it Right".
 - applicationId: `br.com.hsi.kira`. **Não pode mudar depois de publicado na Play.** O app antigo `com.playitright.app` é outro app no Android e precisa ser desinstalado à parte.
+- **Pasta de trabalho: `C:\repos\HSI\kira`**, um clone limpo do GitHub criado em 2026-11-10.
+  - A pasta antiga `C:\repos\HSI\jarvis` é obsoleta. O Windows não deixou renomeá-la, então ela vai ser apagada. Não trabalhe mais nela.
+  - Se ela ainda existir, não tem nada que falte aqui: o último commit dela (`a073381`) já está no GitHub.
+- O que o clone **não** traz (está no `.gitignore`) e foi copiado à mão da pasta antiga:
+  - `src/environments/environment.ts` e `environment.prod.ts`, com a chave do Gemini.
+  - Se perder esses arquivos, recrie a partir dos `.example`.
+  - `node_modules` e as pastas geradas do Android saem de `npm ci` + `npm run build:android`.
+- Celular de testes: Xiaomi (modelo 25080RABDG). O app instalado é o `br.com.hsi.kira`. O app antigo `com.playitright.app` (o mesmo nome "K.I.R.A." e o mesmo ícone) deve ser desinstalado. Para conferir: `adb shell pm list packages | grep -E "kira|playitright"`.
 - Projetos irmãos em `C:\repos\HSI`: `planevento` (mesma stack, serviu de modelo para a abertura, o rodapé, o AdMob e a assinatura), `marcador-truco` (Flutter, a origem do padrão de rodapé HSI) e `leoneves-site` (onde vai ficar a política de privacidade).
 
 ## Stack
