@@ -72,7 +72,3 @@ Thumbs.db
 # Environment files
 /src/environments/environment.prod.ts
 /src/environments/environment.ts
-# Voz Vera (Pocket TTS + sherpa-onnx): arquivos grandes, recriados por scripts/preparar_voz_vera.py
-android/app/libs/sherpa-onnx-*.aar
-android/app/src/main/assets/vera/
-.venv-voz/

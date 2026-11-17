@@ -211,7 +211,7 @@ export class VoiceCommandsService {
     }
   }
 
-  // Hora do jeito que se fala: "Agora é uma e cinco", "Agora são três em ponto", "Agora é meio-dia e meia".
+  // Hora do jeito que se fala: "É uma e cinco", "São três em ponto", "É meio-dia e meia".
   private formatTime(date: Date): string {
     const h = date.getHours();
     const m = date.getMinutes();
@@ -221,14 +221,14 @@ export class VoiceCommandsService {
     const verbo = h === 0 || h === 1 || h === 12 ? 'É' : 'São';
     let minutos: string;
     if (m === 0) {
-      minutos = ' em ponto';
+      minutos = h === 0 || h === 12 ? '' : ' em ponto';
     } else if (m === 30) {
       minutos = ' e meia';
     } else {
       minutos = ` e ${m}`;
     }
 
-    return `Agora ${verbo.toLowerCase()} ${hora}${minutos}.`;
+    return `${verbo} ${hora}${minutos}.`;
   }
 
   private formatDate(date: Date): string {

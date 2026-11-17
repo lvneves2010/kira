@@ -8,39 +8,24 @@
     <ion-list lines="full">
       <ion-list-header>Voz da Kira</ion-list-header>
 
-      <ion-radio-group [value]="voz.modo$ | async" (ionChange)="escolherModo($event.detail.value)">
-        <ion-item *ngIf="voz.veraSuportada">
-          <ion-radio value="vera" justify="space-between">
-            <ion-label class="ion-text-wrap">
-              <h2>Vera</h2>
-              <p>Natural, funciona sem internet e sem limite de uso.</p>
-            </ion-label>
-          </ion-radio>
-        </ion-item>
-        <ion-item>
-          <ion-radio value="leda" justify="space-between">
-            <ion-label class="ion-text-wrap">
-              <h2>Leda (IA do Google)</h2>
-              <p>A mais natural, mas só cerca de 10 falas grátis por dia e precisa de internet.</p>
-              <p *ngIf="ledaEsgotada(voz.ledaEsgotadaAte$ | async)" class="aviso-cota">
-                Cota de hoje esgotada. Volta em {{ voz.ledaEsgotadaAte$ | async | date: 'dd/MM HH:mm' }}.
-              </p>
-            </ion-label>
-          </ion-radio>
-        </ion-item>
-        <ion-item>
-          <ion-radio value="aparelho" justify="space-between">
-            <ion-label class="ion-text-wrap">
-              <h2>Voz do aparelho</h2>
-              <p>A do motor de voz do Android.</p>
-            </ion-label>
-          </ion-radio>
-        </ion-item>
-      </ion-radio-group>
+      <ion-item>
+        <ion-toggle
+          [checked]="voz.ledaLigada$ | async"
+          (ionChange)="alternarLeda($event.detail.checked)"
+          justify="space-between">
+          <ion-label class="ion-text-wrap">
+            <h2>Voz Leda (IA do Google)</h2>
+            <p>A mais natural. Grátis por cerca de 10 falas por dia; depois a Kira usa a voz do aparelho abaixo.</p>
+            <p *ngIf="ledaEsgotada(voz.ledaEsgotadaAte$ | async)" class="aviso-cota">
+              Cota de hoje esgotada. Volta em {{ voz.ledaEsgotadaAte$ | async | date: 'dd/MM HH:mm' }}.
+            </p>
+          </ion-label>
+        </ion-toggle>
+      </ion-item>
 
       <ion-item lines="none">
         <ion-label class="ion-text-wrap">
-          <p>Velocidade da fala (Vera e voz do aparelho):</p>
+          <p>Voz do aparelho: toque numa voz para ouvir. As online soam mais naturais. Sem internet, a Kira usa uma voz offline.</p>
         </ion-label>
       </ion-item>
 
@@ -53,12 +38,6 @@
             <ion-label>{{ v.rotulo }}</ion-label>
           </ion-segment-button>
         </ion-segment>
-      </ion-item>
-
-      <ion-item lines="none">
-        <ion-label class="ion-text-wrap">
-          <p>Voz do aparelho (também é a reserva quando a principal falha). Toque para ouvir:</p>
-        </ion-label>
       </ion-item>
 
       <ng-container *ngIf="voz.opcoes$ | async as opcoes">
@@ -76,13 +55,6 @@
           <ion-note>Carregando vozes do aparelho…</ion-note>
         </ion-item>
       </ng-template>
-
-      <ion-item lines="none" *ngIf="voz.veraSuportada">
-        <ion-note class="credito-voz">
-          Voz Vera: Pocket TTS © Kyutai Labs (CC BY 4.0), versão ONNX de Prasad Vittaldev, executada com o
-          sherpa-onnx (Apache 2.0).
-        </ion-note>
-      </ion-item>
     </ion-list>
 
     <ion-list lines="full">
