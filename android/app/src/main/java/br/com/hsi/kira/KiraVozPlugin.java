@@ -258,6 +258,23 @@ public class KiraVozPlugin extends Plugin {
             pedacos.offer(amostras);
         }
 
+        /** Quantas amostras já foram entregues ao AudioTrack (para saber quando terminou de tocar). */
+        private long amostrasEscritas;
+
+        /**
+         * Escreve em blocos de ~0,1 s: entre um e outro dá para perceber o "parar"
+         * sem ficar preso num write longo numa trilha pausada.
+         */
+        private void escrever(float[] amostras) {
+            int bloco = Math.max(1, audio.getSampleRate() / 10);
+            for (int i = 0; i < amostras.length && minhaFala == falaAtual.get(); i += bloco) {
+                int escritas = audio.write(amostras, i, Math.min(bloco, amostras.length - i), AudioTrack.WRITE_BLOCKING);
+                if (escritas > 0) {
+                    amostrasEscritas += escritas;
+                }
+            }
+        }
+
         void terminar() {
             pedacos.offer(fim);
         }
@@ -272,18 +289,15 @@ public class KiraVozPlugin extends Plugin {
                         continue;
                     }
                     if (amostras == fim) {
-                        esperarTerminarDeTocar(audio, minhaFala);
+                        // Margem de silêncio no fim, para nenhum aparelho engolir a última sílaba.
+                        escrever(new float[(int) (audio.getSampleRate() * 0.2f)]);
+                        esperarTerminarDeTocar(audio, minhaFala, amostrasEscritas);
                         return;
                     }
                     if (primeiroAudioMs < 0) {
                         primeiroAudioMs = SystemClock.elapsedRealtime() - inicio;
                     }
-                    // Em blocos de ~0,1 s: entre um e outro dá para perceber o "parar"
-                    // sem ficar preso num write longo numa trilha pausada.
-                    int bloco = Math.max(1, audio.getSampleRate() / 10);
-                    for (int i = 0; i < amostras.length && minhaFala == falaAtual.get(); i += bloco) {
-                        audio.write(amostras, i, Math.min(bloco, amostras.length - i), AudioTrack.WRITE_BLOCKING);
-                    }
+                    escrever(amostras);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -310,16 +324,23 @@ public class KiraVozPlugin extends Plugin {
                 .build();
     }
 
-    /** O write() termina quando o áudio entra no buffer; espera ele acabar de tocar. */
-    private void esperarTerminarDeTocar(AudioTrack audio, int minhaFala) {
+    /**
+     * O write() volta quando o áudio entra no buffer, não quando termina de tocar.
+     * Espera a posição de reprodução alcançar tudo o que foi escrito e só então para.
+     *
+     * (Antes usávamos stop() + getPlayState(): o estado vira "parado" na hora do stop(),
+     * a espera acabava logo e o release() descartava o fim da fala ainda no buffer.)
+     */
+    private void esperarTerminarDeTocar(AudioTrack audio, int minhaFala, long amostrasEscritas) {
         try {
-            audio.stop(); // em MODE_STREAM, toca o que resta no buffer e para
-            long limite = SystemClock.elapsedRealtime() + 3000;
-            while (audio.getPlayState() == AudioTrack.PLAYSTATE_PLAYING
-                    && minhaFala == falaAtual.get()
+            long limite = SystemClock.elapsedRealtime() + 1000
+                    + amostrasEscritas * 1000L / Math.max(1, audio.getSampleRate());
+            while (minhaFala == falaAtual.get()
+                    && (audio.getPlaybackHeadPosition() & 0xFFFFFFFFL) < amostrasEscritas
                     && SystemClock.elapsedRealtime() < limite) {
-                SystemClock.sleep(30);
+                SystemClock.sleep(20);
             }
+            audio.stop();
         } catch (IllegalStateException ignorada) {
             // já encerrada
         }
