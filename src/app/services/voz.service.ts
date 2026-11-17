@@ -53,8 +53,8 @@ export class VozService {
   readonly opcoes$ = new BehaviorSubject<OpcaoVoz[]>([]);
   readonly vozSelecionada$ = new BehaviorSubject<string | null>(this.ler(CHAVE_VOZ));
   readonly velocidade$ = new BehaviorSubject<number>(Number(this.ler(CHAVE_VELOCIDADE)) || 1.0);
-  /** Ligada por padrão enquanto o app está em teste. */
-  readonly ledaLigada$ = new BehaviorSubject<boolean>(this.ler(CHAVE_LEDA) !== 'nao');
+  /** Desligada por padrão: só ~10 falas grátis por dia. A voz padrão é a do aparelho. */
+  readonly ledaLigada$ = new BehaviorSubject<boolean>(this.ler(CHAVE_LEDA) === 'sim');
   /** Momento (ms) até quando a cota gratuita da Leda está esgotada; 0 = disponível. */
   readonly ledaEsgotadaAte$ = new BehaviorSubject<number>(Number(this.ler(CHAVE_COTA_LEDA)) || 0);
 
