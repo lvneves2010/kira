@@ -1,8 +1,20 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { environment } from '../../environments/environment';
+
+/** Plugin nativo (android/.../KiraVozPlugin.java): voz Vera offline com o sherpa-onnx. */
+interface KiraVozPlugin {
+  preparar(): Promise<{ ms: number }>;
+  falar(opcoes: { texto: string; velocidade: number }): Promise<{ primeiroAudioMs?: number }>;
+  parar(): Promise<void>;
+}
+const KiraVoz = registerPlugin<KiraVozPlugin>('KiraVoz');
+
+/** Qual voz a KIRA usa como principal. A voz do aparelho é sempre a reserva. */
+export type ModoVoz = 'vera' | 'leda' | 'aparelho';
 
 export interface OpcaoVoz {
   /** Índice da voz na lista completa do plugin (é o que o `speak` recebe). */
@@ -21,7 +33,7 @@ export interface OpcaoVelocidade {
 
 const CHAVE_VOZ = 'kira.voz';
 const CHAVE_VELOCIDADE = 'kira.velocidade';
-const CHAVE_LEDA = 'kira.vozLeda';
+const CHAVE_MODO = 'kira.modoVoz';
 const CHAVE_COTA_LEDA = 'kira.vozLedaEsgotadaAte';
 const IDIOMA = 'pt-BR';
 
@@ -38,12 +50,16 @@ const VOZ_LEDA = {
 };
 
 /**
- * Fala da KIRA. Usa a voz Leda (Gemini) quando ligada e disponível; senão,
- * o motor de voz do aparelho (Google TTS no Android), preferindo as vozes
- * neurais ("online") e, sem internet, a versão offline da mesma voz.
+ * Fala da KIRA. A voz principal é escolhida no menu:
+ * - Vera: Pocket TTS rodando no próprio celular (natural, offline, sem limite);
+ * - Leda: Gemini TTS (a mais natural, mas ~10 falas/dia no plano gratuito);
+ * - aparelho: motor de voz do Android (Google TTS), preferindo as vozes neurais.
+ * Se a principal falhar, a KIRA fala com a voz do aparelho.
  */
 @Injectable({ providedIn: 'root' })
 export class VozService {
+  static readonly PALAVRAS_MINIMAS_VERA = 5;
+
   readonly velocidades: OpcaoVelocidade[] = [
     { valor: 0.9, rotulo: 'Calma' },
     { valor: 1.0, rotulo: 'Normal' },
@@ -53,8 +69,10 @@ export class VozService {
   readonly opcoes$ = new BehaviorSubject<OpcaoVoz[]>([]);
   readonly vozSelecionada$ = new BehaviorSubject<string | null>(this.ler(CHAVE_VOZ));
   readonly velocidade$ = new BehaviorSubject<number>(Number(this.ler(CHAVE_VELOCIDADE)) || 1.0);
-  /** Ligada por padrão enquanto o app está em teste. */
-  readonly ledaLigada$ = new BehaviorSubject<boolean>(this.ler(CHAVE_LEDA) !== 'nao');
+  /** Vera é a padrão: natural e sem limite de uso. */
+  readonly modo$ = new BehaviorSubject<ModoVoz>(this.lerModo());
+  /** A Vera só existe no app Android (no navegador cai na voz do aparelho). */
+  readonly veraSuportada = Capacitor.getPlatform() === 'android';
   /** Momento (ms) até quando a cota gratuita da Leda está esgotada; 0 = disponível. */
   readonly ledaEsgotadaAte$ = new BehaviorSubject<number>(Number(this.ler(CHAVE_COTA_LEDA)) || 0);
 
@@ -63,6 +81,7 @@ export class VozService {
   private pararAudioAtual?: () => void;
   /** Contador de falas: permite descartar um áudio que chegou depois do "Parar". */
   private falaAtual = 0;
+  private preparoVera?: Promise<boolean>;
 
   /** Carrega a lista de vozes uma vez; chamadas seguintes reaproveitam o resultado. */
   carregar(): Promise<void> {
@@ -83,23 +102,62 @@ export class VozService {
     this.gravar(CHAVE_VELOCIDADE, String(valor));
   }
 
-  ligarLeda(ligada: boolean): void {
-    this.ledaLigada$.next(ligada);
-    this.gravar(CHAVE_LEDA, ligada ? 'sim' : 'nao');
+  selecionarModo(modo: ModoVoz): void {
+    this.modo$.next(modo);
+    this.gravar(CHAVE_MODO, modo);
+    if (modo === 'vera') {
+      void this.prepararVera();
+    }
   }
 
   ledaDisponivel(): boolean {
-    return this.ledaLigada$.value && Date.now() >= this.ledaEsgotadaAte$.value;
+    return Date.now() >= this.ledaEsgotadaAte$.value;
+  }
+
+  /**
+   * Carrega o modelo da Vera em segundo plano (alguns segundos na primeira vez),
+   * para a primeira fala não demorar. Chamadas repetidas reaproveitam a mesma carga.
+   */
+  prepararVera(): Promise<boolean> {
+    if (!this.veraSuportada) {
+      return Promise.resolve(false);
+    }
+    this.preparoVera ??= KiraVoz.preparar()
+      .then(({ ms }) => {
+        console.log('diagnostic: VozService - Vera carregada em', ms, 'ms');
+        return true;
+      })
+      .catch(err => {
+        console.warn('diagnostic: VozService - Vera indisponível', err);
+        return false;
+      });
+    return this.preparoVera;
   }
 
   /**
    * Fala o texto e só resolve quando terminar.
-   * `somenteAparelho` ignora a Leda (usado na prévia das vozes do aparelho).
+   * `somenteAparelho` usa direto a voz do aparelho (prévia das vozes do aparelho).
    */
   async falar(texto: string, somenteAparelho = false): Promise<void> {
     const fala = ++this.falaAtual;
+    const modo = somenteAparelho ? 'aparelho' : this.modo$.value;
 
-    if (!somenteAparelho && this.ledaDisponivel() && navigator.onLine !== false) {
+    // Abaixo de ~5 palavras o modelo da Vera erra (corta ou gera ruído): usa o aparelho.
+    const curtaDemais = texto.trim().split(/\s+/).length < VozService.PALAVRAS_MINIMAS_VERA;
+    if (modo === 'vera' && !curtaDemais && (await this.prepararVera())) {
+      if (fala !== this.falaAtual) {
+        return;
+      }
+      try {
+        const { primeiroAudioMs } = await KiraVoz.falar({ texto, velocidade: this.velocidade$.value });
+        console.log('diagnostic: VozService - Vera começou a falar em', primeiroAudioMs, 'ms');
+        return;
+      } catch (err) {
+        console.warn('diagnostic: VozService - Vera falhou, usando a voz do aparelho', err);
+      }
+    }
+
+    if (modo === 'leda' && this.ledaDisponivel() && navigator.onLine !== false) {
       const audio = await this.obterAudioLeda(texto);
       if (fala !== this.falaAtual) {
         return; // "Parar" foi tocado enquanto o áudio era gerado.
@@ -120,6 +178,9 @@ export class VozService {
   async parar(): Promise<void> {
     this.falaAtual++;
     this.pararAudioAtual?.();
+    if (this.veraSuportada) {
+      await KiraVoz.parar().catch(() => undefined);
+    }
     await TextToSpeech.stop();
   }
 
@@ -368,6 +429,11 @@ export class VozService {
   /** "pt-br-x-afs-network" e "pt-br-x-afs-local" são a mesma voz em versões diferentes. */
   private codigoBase(id: string): string {
     return id.replace(/-(network|local)$/i, '');
+  }
+
+  private lerModo(): ModoVoz {
+    const salvo = this.ler(CHAVE_MODO);
+    return salvo === 'leda' || salvo === 'aparelho' || salvo === 'vera' ? salvo : 'vera';
   }
 
   private ler(chave: string): string | null {

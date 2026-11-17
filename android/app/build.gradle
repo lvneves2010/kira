@@ -38,6 +38,10 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    androidResources {
+        // Modelos da voz Vera: sem compressão, o sherpa-onnx lê direto do APK, mais rápido.
+        noCompress += ['onnx']
+    }
     signingConfigs {
         release {
             if (keystorePropertiesFile.exists()) {
@@ -71,6 +75,8 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // Voz Vera offline (Pocket TTS). O .aar e o modelo saem de scripts/preparar_voz_vera.py.
+    implementation(name: 'sherpa-onnx-2.0.1', ext: 'aar')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

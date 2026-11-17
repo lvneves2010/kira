@@ -100,6 +100,9 @@ export class HomePage {
     this.anuncios.mostrarBanner();
     // Já deixa a lista de vozes pronta para a primeira fala não atrasar.
     void this.voz.carregar();
+    if (this.voz.modo$.value === 'vera') {
+      void this.voz.prepararVera();
+    }
   }
 
   async recognizeNote() {
@@ -254,7 +257,7 @@ export class HomePage {
 
       // Só "Kira": responde como alguém que foi chamado e fica ouvindo.
       if (kiraRemainder === '') {
-        const resposta = this.sortear(['Oi! Pode falar.', 'Estou ouvindo.', 'Oi, pode dizer.', 'Sim? Pode falar.']);
+        const resposta = this.sortear(['Oi! Pode falar, estou ouvindo.', 'Estou aqui, pode falar comigo.', 'Oi! Em que posso te ajudar?', 'Sim? Pode falar, estou ouvindo.']);
         this.ngZone.run(() => {
           this.recognizedCommand = normalized;
           this.commandResponse = resposta;
@@ -460,7 +463,7 @@ export class HomePage {
   }
 
   private async handleTorchRequest(normalized: string, turnOn: boolean): Promise<void> {
-    const responseText = turnOn ? 'Lanterna ligada.' : 'Lanterna desligada.';
+    const responseText = turnOn ? 'Pronto, a lanterna está ligada.' : 'Pronto, a lanterna está desligada.';
 
     this.ngZone.run(() => {
       this.recognizedCommand = normalized;
@@ -608,7 +611,7 @@ export class HomePage {
         this.awaitingSaveCommand = false;
       });
 
-      await this.speak('Resposta salva com sucesso.');
+      await this.speak('Pronto, a resposta foi salva no arquivo.');
     } catch (err) {
       console.error('diagnostic: saveResponseToFile failed ->', err);
       this.ngZone.run(() => {
