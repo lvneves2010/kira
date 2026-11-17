@@ -21,11 +21,14 @@ import { StatusPanelComponent } from './components/status-panel/status-panel.com
 import { SaveBannerComponent } from './components/save-banner/save-banner.component';
 import { VoiceActionComponent } from './components/voice-action/voice-action.component';
 import { SettingsMenuComponent } from './components/settings-menu/settings-menu.component';
-import { VoiceCommandsService, VoiceCommandMatch } from '../services/voice-commands.service';
+import { VoiceCommandsService, VoiceCommandMatch, AsyncCommandKind } from '../services/voice-commands.service';
 import { WeatherService } from '../services/weather.service';
 import { AnunciosService } from '../services/anuncios.service';
 import { VozService } from '../services/voz.service';
 import { RodapeEmpresaComponent } from '../compartilhado/rodape-empresa/rodape-empresa.component';
+
+/** O que a IA devolve: um texto para falar ou uma ação do app para executar. */
+type RespostaIA = { tipo: 'texto'; texto: string } | { tipo: 'acao'; acao: AsyncCommandKind | 'salvar' };
 
 @Component({
   selector: 'app-home',
@@ -289,7 +292,12 @@ export class HomePage {
 
     let resposta: string;
     try {
-      resposta = this.sanitizeForSpeech(await this.queryLLM(question)).trim();
+      const resultado = await this.queryLLM(question);
+      if (resultado.tipo === 'acao') {
+        await this.executarAcaoDaIA(normalized, resultado.acao);
+        return;
+      }
+      resposta = this.sanitizeForSpeech(resultado.texto).trim();
       this.ngZone.run(() => (this.statusText = 'Resposta recebida'));
     } catch (llmError) {
       console.error('diagnostic: queryLLM failed ->', llmError);
@@ -303,6 +311,23 @@ export class HomePage {
 
     this.ngZone.run(() => (this.commandResponse = resposta));
     await this.speakResponse(resposta);
+  }
+
+  private async executarAcaoDaIA(normalized: string, acao: AsyncCommandKind | 'salvar'): Promise<void> {
+    if (acao === 'salvar') {
+      if (this.lastResponseText) {
+        await this.saveResponseToFile();
+      } else {
+        await this.speakResponse('Ainda não tenho nenhuma resposta para salvar.');
+      }
+      return;
+    }
+    await this.executeCommandResult(normalized, {
+      response: '',
+      speak: true,
+      requiresAsyncHandling: acao,
+      matched: true,
+    });
   }
 
   private async handleRepeatRequest(normalized: string): Promise<void> {
@@ -682,7 +707,7 @@ export class HomePage {
       '- Se a pergunta estiver ambígua ou incompleta (o reconhecimento de voz pode errar palavras), interprete o mais provável ou faça uma pergunta curta.',
       '- Se não souber algo ou não tiver acesso a dados em tempo real, diga isso com naturalidade, sem inventar.',
       '- Não diga que é um modelo de linguagem, a menos que perguntem.',
-      '- Você não executa ações no celular por conta própria. O aplicativo tem comandos de voz próprios para previsão do tempo, lanterna, data e hora, "repetir" e "salvar resposta" (guarda sua última fala num arquivo). Se pedirem algo fora disso, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
+      '- Quando o usuário pedir uma ação que existe nas suas funções (fechar o aplicativo, lanterna, previsão do tempo, repetir, salvar a resposta), chame a função em vez de responder com texto, mesmo que ele use outras palavras. Se pedir algo que nenhuma função faz, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
       `Agora é ${agora}.`,
     ].join('\n');
   }
@@ -721,7 +746,45 @@ export class HomePage {
     return null;
   }
 
-  private async queryLLM(question: string): Promise<string> {
+  /**
+   * Ações do app que a IA pode pedir (function calling). Assim, qualquer jeito
+   * de falar ("pode encerrar por hoje", "acende a luzinha") vira a ação certa,
+   * mesmo sem estar na lista de frases do voice-commands.json.
+   */
+  private static readonly FUNCOES_IA = [
+    { name: 'fechar_aplicativo', description: 'Fecha, encerra, sai ou desliga o aplicativo da Kira.' },
+    {
+      name: 'lanterna',
+      description: 'Liga ou desliga a lanterna (flash) do celular.',
+      parameters: {
+        type: 'object',
+        properties: { ligar: { type: 'boolean', description: 'true para ligar, false para desligar' } },
+        required: ['ligar'],
+      },
+    },
+    { name: 'previsao_do_tempo', description: 'Diz a previsão do tempo para o local atual do usuário.' },
+    { name: 'repetir_ultima_resposta', description: 'Repete a última coisa que a Kira falou.' },
+    { name: 'salvar_resposta', description: 'Salva a última resposta da Kira num arquivo de texto.' },
+  ];
+
+  private acaoDaFuncao(nome: string, args: any): AsyncCommandKind | 'salvar' | null {
+    switch (nome) {
+      case 'fechar_aplicativo':
+        return 'exitApp';
+      case 'lanterna':
+        return args?.ligar === false ? 'torchOff' : 'torchOn';
+      case 'previsao_do_tempo':
+        return 'weather';
+      case 'repetir_ultima_resposta':
+        return 'repeat';
+      case 'salvar_resposta':
+        return 'salvar';
+      default:
+        return null;
+    }
+  }
+
+  private async queryLLM(question: string): Promise<RespostaIA> {
     const apiUrl = environment.llmApiUrl;
     const apiKey = environment.llmApiKey;
 
@@ -738,6 +801,7 @@ export class HomePage {
         ...historico.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
         { role: 'user', parts: [{ text: question }] },
       ],
+      tools: [{ functionDeclarations: HomePage.FUNCOES_IA }],
       generationConfig: {
         // Um pouco acima do padrão para variar o jeito de falar sem perder precisão.
         temperature: 0.8,
@@ -791,7 +855,17 @@ export class HomePage {
           throw new Error(`Erro LLM: ${errorMessage}`);
         }
 
-        const parts: { text?: string; thought?: boolean }[] = data?.candidates?.[0]?.content?.parts ?? [];
+        const parts: { text?: string; thought?: boolean; functionCall?: { name: string; args?: any } }[] =
+          data?.candidates?.[0]?.content?.parts ?? [];
+
+        // A IA entendeu a frase como um pedido de ação do app.
+        const chamada = parts.find(p => p.functionCall)?.functionCall;
+        const acao = chamada ? this.acaoDaFuncao(chamada.name, chamada.args) : null;
+        if (acao) {
+          console.log('diagnostic: queryLLM - IA pediu a ação:', chamada?.name, JSON.stringify(chamada?.args));
+          return { tipo: 'acao', acao };
+        }
+
         const rawAnswer = parts
           .filter(p => !p.thought && p.text)
           .map(p => p.text)
@@ -799,14 +873,14 @@ export class HomePage {
           .trim();
 
         if (!rawAnswer) {
-          return 'Hum, não consegui pensar numa resposta agora. Pode tentar de novo?';
+          return { tipo: 'texto', texto: 'Hum, não consegui pensar numa resposta agora. Pode tentar de novo?' };
         }
 
         const answer = this.sanitizeForSpeech(rawAnswer);
         this.rememberLlmTurn(question, answer);
 
         console.log('diagnostic: queryLLM - resposta final:', answer);
-        return answer;
+        return { tipo: 'texto', texto: answer };
       } catch (error) {
         console.error('diagnostic: queryLLM - erro:', error);
 

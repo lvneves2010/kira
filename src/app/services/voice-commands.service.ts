@@ -69,13 +69,71 @@ const MONTHS = [
 
 const FALLBACK_RESPONSE: VoiceCommandMatch = { response: 'Desculpe, não entendi', speak: true, matched: false };
 
+/**
+ * Formas de um mesmo verbo que as pessoas usam ao dar um comando
+ * ("feche", "fechar", "fecha"). Tudo vira uma forma só, tanto na frase
+ * falada quanto nos padrões, para não precisar escrever cada variação.
+ */
+const FORMAS_VERBAIS: Record<string, string[]> = {
+  fecha: ['feche', 'fechar'],
+  desliga: ['desligue', 'desligar'],
+  liga: ['ligue', 'ligar'],
+  acende: ['acenda', 'acender'],
+  apaga: ['apague', 'apagar'],
+  ativa: ['ative', 'ativar'],
+  desativa: ['desative', 'desativar'],
+  encerra: ['encerre', 'encerrar'],
+  finaliza: ['finalize', 'finalizar'],
+  abre: ['abra', 'abrir'],
+  sai: ['saia', 'sair'],
+  aumenta: ['aumente', 'aumentar'],
+  diminui: ['diminua', 'diminuir'],
+  abaixa: ['abaixe', 'abaixar'],
+  toca: ['toque', 'tocar'],
+  conta: ['conte', 'contar'],
+  fala: ['fale', 'falar'],
+  diz: ['diga', 'dizer'],
+  repete: ['repita', 'repetir'],
+  mostra: ['mostre', 'mostrar'],
+  inicia: ['inicie', 'iniciar'],
+  cancela: ['cancele', 'cancelar'],
+  canta: ['cante', 'cantar'],
+  traduz: ['traduza', 'traduzir'],
+  define: ['defina', 'definir'],
+  cria: ['crie', 'criar'],
+  adiciona: ['adicione', 'adicionar'],
+  coloca: ['coloque', 'colocar'],
+  salva: ['salve', 'salvar'],
+};
+
+const FORMA_CANONICA = new Map<string, string>();
+for (const [canonica, formas] of Object.entries(FORMAS_VERBAIS)) {
+  formas.forEach(forma => FORMA_CANONICA.set(forma, canonica));
+}
+
+/** Sinônimos de uma palavra só. */
+const SINONIMOS: Record<string, string> = {
+  app: 'aplicativo',
+  aplicacao: 'aplicativo',
+  lanterninha: 'lanterna',
+};
+
+/** Palavras que não mudam o sentido do comando: artigos e cortesias. */
+const PALAVRAS_IGNORADAS = new Set(['o', 'a', 'os', 'as', 'um', 'uma', 'favor', 'por']);
+
 @Injectable({ providedIn: 'root' })
 export class VoiceCommandsService {
   private readonly commands = voiceCommandsData as VoiceCommandEntry[];
 
+  /** Padrões já canonizados, calculados uma vez. */
+  private readonly padroes = this.commands.map(command => ({
+    command,
+    padroes: command.patterns.map(p => this.canonizar(p)).filter(p => p.length > 0),
+  }));
+
   match(normalized: string): VoiceCommandMatch {
-    const words = normalized.split(' ').filter(Boolean);
-    const entry = this.commands.find(command => command.patterns.some(pattern => this.containsPhrase(words, pattern)));
+    const words = this.canonizar(normalized);
+    const entry = this.padroes.find(({ padroes }) => padroes.some(p => this.containsPhrase(words, p)))?.command;
 
     if (!entry) {
       return FALLBACK_RESPONSE;
@@ -99,8 +157,7 @@ export class VoiceCommandsService {
 
   // Casa por sequência de palavras inteiras, não por substring bruta:
   // "desliga a luz" não pode acidentalmente casar com o padrão "liga a luz".
-  private containsPhrase(words: string[], pattern: string): boolean {
-    const patternWords = pattern.split(' ').filter(Boolean);
+  private containsPhrase(words: string[], patternWords: string[]): boolean {
     if (patternWords.length === 0 || patternWords.length > words.length) {
       return false;
     }
@@ -113,6 +170,15 @@ export class VoiceCommandsService {
     }
 
     return false;
+  }
+
+  /** "Feche o app, por favor" → ["fecha", "aplicativo"]. */
+  private canonizar(frase: string): string[] {
+    return frase
+      .split(' ')
+      .filter(Boolean)
+      .filter(p => !PALAVRAS_IGNORADAS.has(p))
+      .map(p => SINONIMOS[p] ?? FORMA_CANONICA.get(p) ?? p);
   }
 
   private resolveResponse(entry: VoiceCommandEntry): string {
