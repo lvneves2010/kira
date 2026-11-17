@@ -16,9 +16,8 @@ import {
   IonSegment,
   IonSegmentButton,
   IonNote,
-  IonToggle,
 } from '@ionic/angular/standalone';
-import { VozService } from '../../../services/voz.service';
+import { ModoVoz, VozService } from '../../../services/voz.service';
 
 @Component({
   selector: 'app-settings-menu',
@@ -40,7 +39,6 @@ import { VozService } from '../../../services/voz.service';
     IonSegment,
     IonSegmentButton,
     IonNote,
-    IonToggle,
   ],
   templateUrl: './settings-menu.component.html',
   styleUrls: ['./settings-menu.component.scss'],
@@ -65,11 +63,9 @@ export class SettingsMenuComponent {
     void this.voz.carregar();
   }
 
-  async alternarLeda(ligada: boolean): Promise<void> {
-    this.voz.ligarLeda(ligada);
-    if (ligada) {
-      await this.demonstrar(false);
-    }
+  async escolherModo(modo: ModoVoz): Promise<void> {
+    this.voz.selecionarModo(modo);
+    await this.demonstrar(false);
   }
 
   // A velocidade e a lista de vozes valem para a voz do aparelho,
@@ -85,7 +81,8 @@ export class SettingsMenuComponent {
       return;
     }
     this.voz.selecionarVelocidade(numero);
-    await this.demonstrar(true);
+    // A velocidade vale para a voz natural e para o aparelho; a Leda fica de fora para não gastar cota.
+    await this.demonstrar(this.voz.modo$.value === 'leda');
   }
 
   ledaEsgotada(ate: number | null): boolean {
