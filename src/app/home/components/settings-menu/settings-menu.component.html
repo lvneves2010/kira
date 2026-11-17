@@ -1,10 +1,47 @@
-<ion-menu contentId="main-content" type="overlay">
+<ion-menu contentId="main-content" type="overlay" (ionWillOpen)="aoAbrirMenu()">
   <ion-header>
     <ion-toolbar>
       <ion-title>Configurações</ion-title>
     </ion-toolbar>
   </ion-header>
   <ion-content>
+    <ion-list lines="full">
+      <ion-list-header>Voz da Kira</ion-list-header>
+
+      <ion-item lines="none">
+        <ion-label class="ion-text-wrap">
+          <p>Toque numa voz para ouvir. As vozes online soam mais naturais. Sem internet, a Kira usa uma voz offline.</p>
+        </ion-label>
+      </ion-item>
+
+      <ion-item lines="none">
+        <ion-segment
+          [value]="voz.velocidade$ | async"
+          (ionChange)="escolherVelocidade($event.detail.value)"
+          aria-label="Velocidade da fala">
+          <ion-segment-button *ngFor="let v of voz.velocidades" [value]="v.valor">
+            <ion-label>{{ v.rotulo }}</ion-label>
+          </ion-segment-button>
+        </ion-segment>
+      </ion-item>
+
+      <ng-container *ngIf="voz.opcoes$ | async as opcoes">
+        <ion-radio-group
+          *ngIf="opcoes.length; else semVozes"
+          [value]="(voz.vozSelecionada$ | async) || opcoes[0].id"
+          (ionChange)="escolherVoz($event.detail.value)">
+          <ion-item *ngFor="let opcao of opcoes">
+            <ion-radio [value]="opcao.id" justify="space-between">{{ opcao.rotulo }}</ion-radio>
+          </ion-item>
+        </ion-radio-group>
+      </ng-container>
+      <ng-template #semVozes>
+        <ion-item>
+          <ion-note>Carregando vozes do aparelho…</ion-note>
+        </ion-item>
+      </ng-template>
+    </ion-list>
+
     <ion-list lines="full">
       <ion-list-header>Diagnóstico</ion-list-header>
       <ion-item>

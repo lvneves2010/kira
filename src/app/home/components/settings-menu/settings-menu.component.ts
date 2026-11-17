@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   IonMenu,
@@ -11,7 +11,14 @@ import {
   IonItem,
   IonLabel,
   IonButton,
+  IonRadioGroup,
+  IonRadio,
+  IonSegment,
+  IonSegmentButton,
+  IonNote,
 } from '@ionic/angular/standalone';
+import { TextToSpeech } from '@capacitor-community/text-to-speech';
+import { VozService } from '../../../services/voz.service';
 
 @Component({
   selector: 'app-settings-menu',
@@ -28,11 +35,18 @@ import {
     IonItem,
     IonLabel,
     IonButton,
+    IonRadioGroup,
+    IonRadio,
+    IonSegment,
+    IonSegmentButton,
+    IonNote,
   ],
   templateUrl: './settings-menu.component.html',
   styleUrls: ['./settings-menu.component.scss'],
 })
 export class SettingsMenuComponent {
+  readonly voz = inject(VozService);
+
   @Input() isProcessing = false;
   @Input() micTestStatus = '';
 
@@ -41,4 +55,35 @@ export class SettingsMenuComponent {
 
   @Output() testMicrophone = new EventEmitter<void>();
   @Output() privacidadeAnuncios = new EventEmitter<void>();
+
+  private static readonly FRASE_DEMONSTRACAO =
+    'Oi! Eu sou a Kira. Se gostar desta voz, é só deixar marcada que eu passo a falar assim.';
+
+  /** Ao abrir o menu, garante que a lista de vozes está carregada. */
+  aoAbrirMenu(): void {
+    void this.voz.carregar();
+  }
+
+  async escolherVoz(id: string): Promise<void> {
+    this.voz.selecionarVoz(id);
+    await this.demonstrar();
+  }
+
+  async escolherVelocidade(valor: unknown): Promise<void> {
+    const numero = Number(valor);
+    if (!numero) {
+      return;
+    }
+    this.voz.selecionarVelocidade(numero);
+    await this.demonstrar();
+  }
+
+  private async demonstrar(): Promise<void> {
+    try {
+      await TextToSpeech.stop();
+      await this.voz.falar(SettingsMenuComponent.FRASE_DEMONSTRACAO);
+    } catch (err) {
+      console.warn('diagnostic: demonstração de voz falhou', err);
+    }
+  }
 }

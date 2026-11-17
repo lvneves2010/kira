@@ -25,6 +25,7 @@ import { SettingsMenuComponent } from './components/settings-menu/settings-menu.
 import { VoiceCommandsService, VoiceCommandMatch } from '../services/voice-commands.service';
 import { WeatherService } from '../services/weather.service';
 import { AnunciosService } from '../services/anuncios.service';
+import { VozService } from '../services/voz.service';
 import { RodapeEmpresaComponent } from '../compartilhado/rodape-empresa/rodape-empresa.component';
 
 @Component({
@@ -86,6 +87,7 @@ export class HomePage {
   private readonly ngZone = inject(NgZone);
   private readonly voiceCommands = inject(VoiceCommandsService);
   private readonly weatherService = inject(WeatherService);
+  private readonly voz = inject(VozService);
 
   constructor() {
     addIcons({ mic, save });
@@ -94,6 +96,8 @@ export class HomePage {
   /** Banner do AdMob só nas telas internas (nunca na abertura). */
   ionViewDidEnter() {
     this.anuncios.mostrarBanner();
+    // Já deixa a lista de vozes pronta para a primeira fala não atrasar.
+    void this.voz.carregar();
   }
 
   async recognizeNote() {
@@ -630,15 +634,7 @@ export class HomePage {
     });
 
     try {
-      await TextToSpeech.speak({
-        text,
-        lang: 'pt-BR',
-        rate: 1.0,
-        pitch: 1.0,
-        volume: 1.0,
-        category: 'ambient',
-        queueStrategy: 0,
-      });
+      await this.voz.falar(text);
       console.log('diagnostic: TextToSpeech.speak completed');
     } catch (err) {
       console.error('diagnostic: TextToSpeech.speak failed', err);
