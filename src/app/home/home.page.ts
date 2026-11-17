@@ -12,7 +12,6 @@ import {
 } from '@ionic/angular/standalone';
 import { addIcons } from 'ionicons';
 import { mic, save } from 'ionicons/icons';
-import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { App } from '@capacitor/app';
 import { Torch } from '@capawesome/capacitor-torch';
@@ -226,9 +225,9 @@ export class HomePage {
     this.stopFollowUpListening();
 
     try {
-      await TextToSpeech.stop();
+      await this.voz.parar();
     } catch (err) {
-      console.warn('diagnostic: TextToSpeech.stop failed', err);
+      console.warn('diagnostic: parar a fala falhou', err);
     }
 
     this.ngZone.run(() => {

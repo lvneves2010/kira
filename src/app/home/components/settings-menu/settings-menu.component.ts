@@ -16,8 +16,8 @@ import {
   IonSegment,
   IonSegmentButton,
   IonNote,
+  IonToggle,
 } from '@ionic/angular/standalone';
-import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { VozService } from '../../../services/voz.service';
 
 @Component({
@@ -40,6 +40,7 @@ import { VozService } from '../../../services/voz.service';
     IonSegment,
     IonSegmentButton,
     IonNote,
+    IonToggle,
   ],
   templateUrl: './settings-menu.component.html',
   styleUrls: ['./settings-menu.component.scss'],
@@ -64,9 +65,18 @@ export class SettingsMenuComponent {
     void this.voz.carregar();
   }
 
+  async alternarLeda(ligada: boolean): Promise<void> {
+    this.voz.ligarLeda(ligada);
+    if (ligada) {
+      await this.demonstrar(false);
+    }
+  }
+
+  // A velocidade e a lista de vozes valem para a voz do aparelho,
+  // então a prévia usa sempre ela (e não gasta a cota da Leda).
   async escolherVoz(id: string): Promise<void> {
     this.voz.selecionarVoz(id);
-    await this.demonstrar();
+    await this.demonstrar(true);
   }
 
   async escolherVelocidade(valor: unknown): Promise<void> {
@@ -75,13 +85,17 @@ export class SettingsMenuComponent {
       return;
     }
     this.voz.selecionarVelocidade(numero);
-    await this.demonstrar();
+    await this.demonstrar(true);
   }
 
-  private async demonstrar(): Promise<void> {
+  ledaEsgotada(ate: number | null): boolean {
+    return !!ate && Date.now() < ate;
+  }
+
+  private async demonstrar(somenteAparelho: boolean): Promise<void> {
     try {
-      await TextToSpeech.stop();
-      await this.voz.falar(SettingsMenuComponent.FRASE_DEMONSTRACAO);
+      await this.voz.parar();
+      await this.voz.falar(SettingsMenuComponent.FRASE_DEMONSTRACAO, somenteAparelho);
     } catch (err) {
       console.warn('diagnostic: demonstração de voz falhou', err);
     }

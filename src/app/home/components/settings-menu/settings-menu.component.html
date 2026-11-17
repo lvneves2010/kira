@@ -8,9 +8,24 @@
     <ion-list lines="full">
       <ion-list-header>Voz da Kira</ion-list-header>
 
+      <ion-item>
+        <ion-toggle
+          [checked]="voz.ledaLigada$ | async"
+          (ionChange)="alternarLeda($event.detail.checked)"
+          justify="space-between">
+          <ion-label class="ion-text-wrap">
+            <h2>Voz Leda (IA do Google)</h2>
+            <p>A mais natural. Grátis por cerca de 10 falas por dia; depois a Kira usa a voz do aparelho abaixo.</p>
+            <p *ngIf="ledaEsgotada(voz.ledaEsgotadaAte$ | async)" class="aviso-cota">
+              Cota de hoje esgotada. Volta em {{ voz.ledaEsgotadaAte$ | async | date: 'dd/MM HH:mm' }}.
+            </p>
+          </ion-label>
+        </ion-toggle>
+      </ion-item>
+
       <ion-item lines="none">
         <ion-label class="ion-text-wrap">
-          <p>Toque numa voz para ouvir. As vozes online soam mais naturais. Sem internet, a Kira usa uma voz offline.</p>
+          <p>Voz do aparelho: toque numa voz para ouvir. As online soam mais naturais. Sem internet, a Kira usa uma voz offline.</p>
         </ion-label>
       </ion-item>
 
