@@ -3,7 +3,7 @@
     *ngIf="isSpeaking"
     type="button"
     class="stop-speaking-btn"
-    (click)="stop.emit()"
+    (click)="stopSpeaking.emit()"
     aria-label="Parar leitura">
     <img src="assets/icon/stop-speaking.svg" alt="" class="stop-speaking-icon" />
     <span>Parar leitura</span>
@@ -13,7 +13,7 @@
     *ngIf="!isSpeaking"
     type="button"
     class="speak-fab"
-    (click)="start.emit()"
+    (click)="startListening.emit()"
     [disabled]="isListeningForCommand"
     aria-label="Falar com a Kira">
     <ion-icon name="mic" class="speak-fab-icon"></ion-icon>

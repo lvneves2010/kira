@@ -76,11 +76,18 @@ export class HomePage {
   private readonly saveListenWindowMs = 10000;
   lastResponseText: string | null = null;
 
-  constructor(
-    private ngZone: NgZone,
-    private voiceCommands: VoiceCommandsService,
-    private weatherService: WeatherService
-  ) {
+  // Memória curta da conversa com a IA: permite perguntas de seguimento
+  // ("e amanhã?", "explica melhor") sem pesar a requisição.
+  private llmHistory: { role: 'user' | 'model'; text: string }[] = [];
+  private llmLastInteraction = 0;
+  private static readonly LLM_HISTORY_MAX_TURNS = 4; // pares pergunta/resposta
+  private static readonly LLM_HISTORY_TTL_MS = 5 * 60 * 1000; // esquece após 5 min parado
+
+  private readonly ngZone = inject(NgZone);
+  private readonly voiceCommands = inject(VoiceCommandsService);
+  private readonly weatherService = inject(WeatherService);
+
+  constructor() {
     addIcons({ mic, save });
   }
 
@@ -171,8 +178,19 @@ export class HomePage {
 
     this.speechRecognition.onerror = (ev: any) => {
       console.warn('diagnostic: speech error', ev);
+      const erro = ev.error || ev.message || String(ev);
       this.ngZone.run(() => {
-        this.errorMessage = `Reconhecimento de voz falhou: ${ev.error || ev.message || ev}`;
+        // Silêncio ou fala não reconhecida é normal: só avisa no status, sem alerta.
+        if (erro === 'no-speech' || erro === 'no-match' || erro === 'aborted') {
+          this.statusText = 'Não ouvi nada. Toque e fale de novo.';
+          return;
+        }
+        this.errorMessage =
+          erro === 'not-allowed' || erro === 'service-not-allowed'
+            ? 'A Kira precisa de permissão para usar o microfone. Ative em Ajustes > Apps > K.I.R.A. > Permissões.'
+            : erro === 'network'
+              ? 'O reconhecimento de voz precisa de internet. Verifique a conexão e tente de novo.'
+              : `Reconhecimento de voz falhou: ${erro}`;
         this.errorAlertOpen = true;
       });
     };
@@ -180,7 +198,7 @@ export class HomePage {
     this.speechRecognition.onend = () => {
       this.ngZone.run(() => {
         this.isListeningForCommand = false;
-        if (!this.isSpeaking && !this.awaitingSaveCommand) {
+        if (!this.isSpeaking && !this.awaitingSaveCommand && this.statusText === 'Escutando... fale agora.') {
           this.statusText = 'Pronto. Toque para falar com a Kira.';
         }
       });
@@ -228,30 +246,23 @@ export class HomePage {
 
       const kiraRemainder = this.matchKiraTrigger(normalized);
 
-      if (kiraRemainder !== null) {
-        if (!kiraRemainder) {
-          this.ngZone.run(() => {
-            this.commandResponse = 'Pergunta vazia. Fale algo após "Kira".';
-            this.statusText = 'Pergunta inválida';
-            this.resetAwaitingSave();
-          });
-          return;
-        }
-
-        // "Kira" funciona como uma ativação geral: tenta primeiro um comando
-        // conhecido (ex.: "Kira, feche o aplicativo") e só recorre à IA se
-        // a frase não corresponder a nenhum comando.
-        const commandResult = this.voiceCommands.match(kiraRemainder);
-        if (commandResult.matched) {
-          await this.executeCommandResult(normalized, commandResult);
-        } else {
-          await this.handleLlmQuestion(normalized, kiraRemainder);
-        }
+      // Só "Kira": responde como alguém que foi chamado e fica ouvindo.
+      if (kiraRemainder === '') {
+        const resposta = this.sortear(['Oi! Pode falar.', 'Estou ouvindo.', 'Oi, pode dizer.', 'Sim? Pode falar.']);
+        this.ngZone.run(() => {
+          this.recognizedCommand = normalized;
+          this.commandResponse = resposta;
+          this.statusText = 'Ouvindo...';
+        });
+        await this.speakResponse(resposta);
         return;
       }
 
-      const commandResult = this.voiceCommands.match(normalized);
-      await this.executeCommandResult(normalized, commandResult);
+      // "Kira" no começo é opcional: tenta primeiro um comando conhecido
+      // (ex.: "Kira, feche o aplicativo") e, se nada casar, a frase vai para a IA.
+      const frase = kiraRemainder ?? normalized;
+      const commandResult = this.voiceCommands.match(frase);
+      await this.executeCommandResult(normalized, commandResult, frase);
     } catch (e) {
       console.error('diagnostic: processRecognizedCommand error ->', e);
       this.ngZone.run(() => {
@@ -262,34 +273,70 @@ export class HomePage {
     }
   }
 
-  private async handleLlmQuestion(normalized: string, question: string): Promise<void> {
+  /**
+   * Manda a pergunta para a IA. Se falhar, fala a `reserva` (resposta fixa do comando)
+   * ou uma mensagem amigável, em vez de só mostrar um alerta mudo.
+   */
+  private async handleLlmQuestion(normalized: string, question: string, reserva?: string): Promise<void> {
     this.ngZone.run(() => {
       this.recognizedCommand = normalized;
-      this.commandResponse = 'Consultando...';
-      this.statusText = 'Enviando pergunta...';
+      this.commandResponse = 'Pensando...';
+      this.statusText = 'Pensando...';
     });
 
+    let resposta: string;
     try {
-      const answer = await this.queryLLM(question);
-      const cleanAnswer = this.sanitizeForSpeech(answer).trim();
-      this.ngZone.run(() => {
-        this.commandResponse = cleanAnswer;
-        this.statusText = 'Resposta recebida';
-      });
-      await this.speakResponse(cleanAnswer);
+      resposta = this.sanitizeForSpeech(await this.queryLLM(question)).trim();
+      this.ngZone.run(() => (this.statusText = 'Resposta recebida'));
     } catch (llmError) {
       console.error('diagnostic: queryLLM failed ->', llmError);
-      this.ngZone.run(() => {
-        this.commandResponse = String(llmError || 'Erro desconhecido');
-        this.errorMessage = 'Não foi possível obter resposta da IA.';
-        this.errorAlertOpen = true;
-        this.statusText = 'Erro na consulta';
-        this.resetAwaitingSave();
-      });
+      resposta =
+        reserva ||
+        (navigator.onLine === false
+          ? 'Parece que o celular está sem internet. Assim que voltar a conexão, me pergunte de novo.'
+          : 'Não consegui pensar numa resposta agora. Pode tentar de novo daqui a pouquinho?');
+      this.ngZone.run(() => (this.statusText = 'Não consegui consultar a IA'));
     }
+
+    this.ngZone.run(() => (this.commandResponse = resposta));
+    await this.speakResponse(resposta);
   }
 
-  private async executeCommandResult(normalized: string, commandResult: VoiceCommandMatch): Promise<void> {
+  private async handleRepeatRequest(normalized: string): Promise<void> {
+    const texto = this.lastResponseText || 'Ainda não falei nada para repetir. Pode me perguntar alguma coisa!';
+    this.ngZone.run(() => {
+      this.recognizedCommand = normalized;
+      this.commandResponse = texto;
+      this.statusText = 'Repetindo';
+    });
+    await this.speakResponse(texto);
+  }
+
+  private sortear(opcoes: string[]): string {
+    return opcoes[Math.floor(Math.random() * opcoes.length)];
+  }
+
+  private async executeCommandResult(
+    normalized: string,
+    commandResult: VoiceCommandMatch,
+    frase: string = normalized
+  ): Promise<void> {
+    // Nenhum comando conhecido: em vez de "não entendi", a IA tenta responder.
+    if (!commandResult.matched) {
+      await this.handleLlmQuestion(normalized, frase);
+      return;
+    }
+
+    if (commandResult.requiresAsyncHandling === 'llm') {
+      await this.handleLlmQuestion(normalized, frase, commandResult.response);
+      return;
+    }
+
+    if (commandResult.requiresAsyncHandling === 'repeat') {
+      await this.handleRepeatRequest(normalized);
+      return;
+    }
+
     if (commandResult.requiresAsyncHandling === 'weather') {
       await this.handleWeatherRequest(normalized);
       return;
@@ -603,8 +650,62 @@ export class HomePage {
     }
   }
 
+  // Remove marcações que soam mal quando lidas em voz alta (markdown, emojis, links).
   private sanitizeForSpeech(text: string): string {
-    return text.replace(/[*#]/g, ' ');
+    return text
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, '')
+      .replace(/[*#_`~>|]/g, ' ')
+      .replace(/[\p{Extended_Pictographic}️‍]/gu, '')
+      .replace(/\s*\n+\s*/g, '. ')
+      .replace(/([.!?:;,])\s*\.+/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  private buildSystemInstruction(): string {
+    const agora = new Date().toLocaleString('pt-BR', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    return [
+      'Você é a KIRA, uma assistente de voz brasileira, simpática e esperta, que conversa pelo celular.',
+      'Sua resposta será lida em voz alta por um sintetizador, então escreva como uma pessoa fala:',
+      '- Português do Brasil, tom natural e acolhedor, como uma amiga que entende do assunto.',
+      '- Seja breve: em geral uma a três frases. Só se estenda se o usuário pedir detalhes.',
+      '- Nada de markdown, listas, tópicos, títulos, emojis, links ou tabelas. Se houver vários itens, cite-os numa frase corrida.',
+      '- Escreva números, siglas e símbolos do jeito que se fala quando isso ajudar a leitura (ex.: "vinte graus", não "20°C").',
+      '- Vá direto ao ponto. Não repita a pergunta e não comece sempre com "Claro" ou "Ótima pergunta".',
+      '- Varie as palavras e pode usar expressões leves do dia a dia, sem exagerar nas gírias.',
+      '- Se a pergunta estiver ambígua ou incompleta (o reconhecimento de voz pode errar palavras), interprete o mais provável ou faça uma pergunta curta.',
+      '- Se não souber algo ou não tiver acesso a dados em tempo real, diga isso com naturalidade, sem inventar.',
+      '- Não diga que é um modelo de linguagem, a menos que perguntem.',
+      '- Você não executa ações no celular por conta própria. O aplicativo tem comandos de voz próprios para previsão do tempo, lanterna, data e hora, "repetir" e "salvar resposta" (guarda sua última fala num arquivo). Se pedirem algo fora disso, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
+      `Agora é ${agora}.`,
+    ].join('\n');
+  }
+
+  private getLlmHistory(): { role: 'user' | 'model'; text: string }[] {
+    if (Date.now() - this.llmLastInteraction > HomePage.LLM_HISTORY_TTL_MS) {
+      this.llmHistory = [];
+    }
+    return this.llmHistory;
+  }
+
+  private rememberLlmTurn(question: string, answer: string): void {
+    this.llmHistory.push({ role: 'user', text: question }, { role: 'model', text: answer });
+    const maxMessages = HomePage.LLM_HISTORY_MAX_TURNS * 2;
+    if (this.llmHistory.length > maxMessages) {
+      this.llmHistory = this.llmHistory.slice(-maxMessages);
+    }
+    this.llmLastInteraction = Date.now();
   }
 
   // O reconhecimento de voz às vezes transcreve "Kira" com grafias parecidas
@@ -633,25 +734,37 @@ export class HomePage {
       throw new Error('LLM API não está configurada. Atualize src/environments/environment.ts.');
     }
 
+    const historico = this.getLlmHistory();
     const requestBody = {
+      systemInstruction: {
+        parts: [{ text: this.buildSystemInstruction() }],
+      },
       contents: [
-        {
-          parts: [
-            {
-              text: `Responda em português de forma clara e objetiva. Pergunta: ${question}`,
-            },
-          ],
-        },
+        ...historico.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+        { role: 'user', parts: [{ text: question }] },
       ],
+      generationConfig: {
+        // Um pouco acima do padrão para variar o jeito de falar sem perder precisão.
+        temperature: 0.8,
+        // Teto de segurança; o tamanho real é controlado pela instrução acima.
+        maxOutputTokens: 600,
+      },
     };
 
     const urlWithKey = `${apiUrl}?key=${apiKey}`;
     console.log('diagnostic: queryLLM - enviando para Gemini:', apiUrl);
     console.log('diagnostic: queryLLM - pergunta:', question);
 
-    const maxTentativas = 5;
+    const maxTentativas = 3;
+    const tempoLimiteMs = 15000;
 
     for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+      // Só vale tentar de novo em falhas passageiras: rede, tempo esgotado, 429 e 5xx.
+      // Erros como chave inválida (400/403) falham na hora, sem fazer o usuário esperar.
+      let podeRepetir = true;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), tempoLimiteMs);
+
       try {
         const response = await fetch(urlWithKey, {
           method: 'POST',
@@ -659,6 +772,7 @@ export class HomePage {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(requestBody),
+          signal: controller.signal,
         });
 
         console.log(
@@ -678,34 +792,43 @@ export class HomePage {
             response.statusText;
 
           console.error('diagnostic: queryLLM - erro HTTP:', errorMessage);
-
-          if ((response.status === 429 || response.status === 503) && tentativa < maxTentativas) {
-            console.log(`diagnostic: aguardando nova tentativa (${tentativa}/${maxTentativas})`);
-
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            continue;
-          }
-
+          podeRepetir = response.status === 429 || response.status >= 500;
           throw new Error(`Erro LLM: ${errorMessage}`);
         }
 
-        const rawAnswer = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        const answer = rawAnswer ? this.sanitizeForSpeech(rawAnswer) : 'Não foi possível obter uma resposta da LLM.';
+        const parts: { text?: string; thought?: boolean }[] = data?.candidates?.[0]?.content?.parts ?? [];
+        const rawAnswer = parts
+          .filter(p => !p.thought && p.text)
+          .map(p => p.text)
+          .join(' ')
+          .trim();
+
+        if (!rawAnswer) {
+          return 'Hum, não consegui pensar numa resposta agora. Pode tentar de novo?';
+        }
+
+        const answer = this.sanitizeForSpeech(rawAnswer);
+        this.rememberLlmTurn(question, answer);
 
         console.log('diagnostic: queryLLM - resposta final:', answer);
         return answer;
       } catch (error) {
-        console.error('diagnostic: queryLLM - erro fetch:', error);
+        console.error('diagnostic: queryLLM - erro:', error);
 
-        if (tentativa >= maxTentativas) {
+        if (!podeRepetir || tentativa >= maxTentativas) {
           throw error;
         }
 
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        this.ngZone.run(() => {
+          this.statusText = 'Só um instante...';
+        });
+        await this.wait(1500 * tentativa);
+      } finally {
+        clearTimeout(timer);
       }
     }
 
-    throw new Error('Falha ao consultar a LLM após 5 tentativas.');
+    throw new Error(`Falha ao consultar a LLM após ${maxTentativas} tentativas.`);
   }
 
   private async listenForSound(duration = 3000): Promise<boolean> {

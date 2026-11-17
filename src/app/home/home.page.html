@@ -55,8 +55,8 @@
       <app-voice-action
         [isSpeaking]="isSpeaking"
         [isListeningForCommand]="isListeningForCommand"
-        (start)="startCommandRecognition()"
-        (stop)="stopSpeaking()">
+        (startListening)="startCommandRecognition()"
+        (stopSpeaking)="stopSpeaking()">
       </app-voice-action>
     </div>
   </ion-content>

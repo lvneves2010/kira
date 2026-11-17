@@ -13,6 +13,6 @@ export class VoiceActionComponent {
   @Input() isSpeaking = false;
   @Input() isListeningForCommand = false;
 
-  @Output() start = new EventEmitter<void>();
-  @Output() stop = new EventEmitter<void>();
+  @Output() startListening = new EventEmitter<void>();
+  @Output() stopSpeaking = new EventEmitter<void>();
 }
