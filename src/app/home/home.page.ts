@@ -955,6 +955,7 @@ export class HomePage {
       '- Vá direto ao ponto. Não repita a pergunta e não comece sempre com "Claro" ou "Ótima pergunta".',
       '- Varie as palavras e pode usar expressões leves do dia a dia, sem exagerar nas gírias.',
       '- Se a pergunta estiver ambígua ou incompleta (o reconhecimento de voz pode errar palavras), interprete o mais provável ou faça uma pergunta curta.',
+      '- Só chame fechar_aplicativo se o usuário pedir claramente para fechar, sair ou encerrar. Uma palavra solta ou sem sentido nunca é pedido para fechar.',
       '- Se não souber algo ou não tiver acesso a dados em tempo real, diga isso com naturalidade, sem inventar.',
       '- Não diga que é um modelo de linguagem, a menos que perguntem.',
       '- Quando o usuário pedir uma ação que existe nas suas funções (fechar o aplicativo, lanterna, previsão do tempo, distância e tempo de viagem, caminho no mapa, lugar mais próximo, repetir, salvar a resposta), chame a função em vez de responder com texto, mesmo que ele use outras palavras. Se pedir algo que nenhuma função faz, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
@@ -996,8 +997,23 @@ export class HomePage {
     return alternativas.find(a => this.matchKiraTrigger(this.normalizeTranscript(a)) === '') ?? primeira;
   }
 
+  /**
+   * O que o reconhecimento costuma entender quando a pessoa diz só "Kira".
+   * Só valem como chamado quando são a frase inteira ("tira uma foto" segue normal).
+   */
+  private static readonly KIRA_SOZINHA = new Set([
+    'tira', 'ira', 'lira', 'gira', 'mira', 'cira', 'sira', 'guira', 'quila', 'kila', 'kia', 'chira', 'quiara', 'kyara', 'quero',
+  ]);
+
+  /** Palavras que mostram que a pessoa quer mesmo fechar o app (ver queryLLM). */
+  private static readonly PEDIDO_DE_FECHAR =
+    /\b(fech\w*|sai\w*|encerr\w*|deslig\w*|termin\w*|finaliz\w*|tchau|adeus|ate logo|ate mais|acab\w*|chega|basta)\b/;
+
   private matchKiraTrigger(normalized: string): string | null {
     const words = normalized.split(' ').filter(Boolean);
+    if (words.length === 1 && HomePage.KIRA_SOZINHA.has(words[0])) {
+      return '';
+    }
     const searchLimit = Math.min(2, words.length);
 
     for (let i = 0; i < searchLimit; i++) {
@@ -1178,6 +1194,14 @@ export class HomePage {
 
         // A IA entendeu a frase como um pedido de ação do app.
         const chamada = parts.find(p => p.functionCall)?.functionCall;
+
+        // Fechar o app é irreversível: só vale se a frase falar mesmo em encerrar.
+        // Ex.: o reconhecimento ouviu "tira" (era "Kira") e a IA entendeu "sair".
+        if (chamada?.name === 'fechar_aplicativo' && !HomePage.PEDIDO_DE_FECHAR.test(question)) {
+          console.warn('diagnostic: queryLLM - IA pediu para fechar sem a frase pedir; perguntando antes');
+          return { tipo: 'texto', texto: 'Não entendi direito. Se quiser que eu feche o aplicativo, é só dizer "fechar".' };
+        }
+
         const acao = chamada ? this.acaoDaFuncao(chamada.name, chamada.args) : null;
         if (acao) {
           console.log('diagnostic: queryLLM - IA pediu a ação:', chamada?.name, JSON.stringify(chamada?.args));
