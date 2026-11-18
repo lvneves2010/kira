@@ -208,7 +208,14 @@ export class HomePage {
     this.isListeningForCommand = true;
     this.statusText = 'Escutando... fale agora.';
 
+    // O reconhecedor do Google não transcreve "Kira" dita sozinha: devolve um resultado
+    // vazio, às vezes sem nem avisar erro. Como tocar no botão já é chamar a Kira, uma escuta
+    // que termina sem texto é tratada como o chamado ("Oi! Pode falar...") e ela fica ouvindo.
+    let teveResultado = false;
+    let erroGrave = false;
+
     this.speechRecognition.onresult = async (event: any) => {
+      teveResultado = true;
       const alternativas: string[] = Array.from(event.results[0] as ArrayLike<any>).map(a =>
         (a?.transcript || '').toLowerCase().trim()
       );
@@ -223,10 +230,15 @@ export class HomePage {
     this.speechRecognition.onerror = (ev: any) => {
       const erro = ev.error || ev.message || String(ev);
       console.warn('diagnostic: speech error=', erro);
+      // Silêncio ou fala não reconhecida: o onend trata como chamado (ver acima).
+      if (erro === 'no-speech' || erro === 'no-match') {
+        return;
+      }
+      erroGrave = true;
       this.ngZone.run(() => {
-        // Silêncio ou fala não reconhecida é normal: só avisa no status, sem alerta.
-        if (erro === 'no-speech' || erro === 'no-match' || erro === 'aborted') {
-          this.statusText = 'Não ouvi nada. Toque e fale de novo.';
+        // Escuta interrompida (ex.: botão Parar): só volta ao normal, sem alerta.
+        if (erro === 'aborted') {
+          this.statusText = 'Pronto. Toque para falar com a Kira.';
           return;
         }
         this.errorMessage =
@@ -246,6 +258,10 @@ export class HomePage {
           this.statusText = 'Pronto. Toque para falar com a Kira.';
         }
       });
+      if (!teveResultado && !erroGrave) {
+        console.log('diagnostic: escuta terminou sem texto - tratando como chamado da Kira');
+        void this.processRecognizedCommand('kira');
+      }
     };
 
     try {
