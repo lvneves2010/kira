@@ -3,6 +3,19 @@
 
 export const environment = {
   production: true,
+  /**
+   * Modelo do Gemini usado pela KIRA, chamado pelo Firebase AI Logic.
+   */
+  llmModelo: 'gemini-flash-lite-latest',
+  /**
+   * Firebase (AI Logic + App Check). Valores do android/app/google-services.json:
+   * apiKey = client[0].api_key[0].current_key, projectId = project_info.project_id,
+   * appId = client[0].client_info.mobilesdk_app_id. Não são segredos (só identificam o projeto);
+   * quem protege a IA é o App Check. Vazio = a IA usa a chave antiga (llmApiKey).
+   */
+  firebase: { apiKey: '', projectId: '', appId: '' },
+  // TRANSIÇÃO: chave antiga, usada só se o Firebase falhar. Depois de validar o Firebase,
+  // apague llmApiUrl/llmApiKey e revogue a chave no Google Cloud.
   llmApiUrl: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent',
   llmApiKey: 'YOUR_GEMINI_API_KEY_HERE',
   /**

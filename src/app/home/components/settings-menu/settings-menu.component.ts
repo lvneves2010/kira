@@ -69,7 +69,7 @@ export class SettingsMenuComponent {
   }
 
   // A velocidade e a lista de vozes valem para a voz do aparelho,
-  // então a prévia usa sempre ela (e não gasta a cota da Leda).
+  // então a prévia usa sempre ela.
   async escolherVoz(id: string): Promise<void> {
     this.voz.selecionarVoz(id);
     await this.demonstrar(true);
@@ -81,12 +81,8 @@ export class SettingsMenuComponent {
       return;
     }
     this.voz.selecionarVelocidade(numero);
-    // A velocidade vale para a voz natural e para o aparelho; a Leda fica de fora para não gastar cota.
-    await this.demonstrar(this.voz.modo$.value === 'leda');
-  }
-
-  ledaEsgotada(ate: number | null): boolean {
-    return !!ate && Date.now() < ate;
+    // A velocidade vale para a voz natural e para o aparelho.
+    await this.demonstrar(false);
   }
 
   private async demonstrar(somenteAparelho: boolean): Promise<void> {

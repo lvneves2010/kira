@@ -15,7 +15,6 @@ import { mic, save } from 'ionicons/icons';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { App } from '@capacitor/app';
 import { Torch } from '@capawesome/capacitor-torch';
-import { environment } from '../../environments/environment';
 import { BrandHeaderComponent } from './components/brand-header/brand-header.component';
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
 import { SaveBannerComponent } from './components/save-banner/save-banner.component';
@@ -42,6 +41,7 @@ import {
 } from '../services/pedidos-de-local';
 import { AnunciosService } from '../services/anuncios.service';
 import { VozService } from '../services/voz.service';
+import { ErroIA, IaService, PedidoIA } from '../services/ia.service';
 import { RodapeEmpresaComponent } from '../compartilhado/rodape-empresa/rodape-empresa.component';
 
 /** O que a IA devolve: um texto para falar ou uma ação do app para executar. */
@@ -119,6 +119,7 @@ export class HomePage {
   /** Último destino calculado, para "abre o mapa" logo depois de "quanto tempo até X". */
   private ultimoDestino?: { coords: Coordenadas; modo: ModoViagem };
   private readonly voz = inject(VozService);
+  private readonly ia = inject(IaService);
 
   constructor() {
     addIcons({ mic, save });
@@ -1104,15 +1105,12 @@ export class HomePage {
   }
 
   private async queryLLM(question: string): Promise<RespostaIA> {
-    const apiUrl = environment.llmApiUrl;
-    const apiKey = environment.llmApiKey;
-
-    if (!apiUrl || !apiKey) {
-      throw new Error('LLM API não está configurada. Atualize src/environments/environment.ts.');
+    if (!this.ia.configurada()) {
+      throw new Error('A IA não está configurada. Atualize src/environments/environment.ts.');
     }
 
     const historico = this.getLlmHistory();
-    const requestBody = {
+    const requestBody: PedidoIA = {
       systemInstruction: {
         parts: [{ text: this.buildSystemInstruction() }],
       },
@@ -1129,8 +1127,6 @@ export class HomePage {
       },
     };
 
-    const urlWithKey = `${apiUrl}?key=${apiKey}`;
-    console.log('diagnostic: queryLLM - enviando para Gemini:', apiUrl);
     console.log('diagnostic: queryLLM - pergunta:', question);
 
     const maxTentativas = 3;
@@ -1139,40 +1135,9 @@ export class HomePage {
     for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
       // Só vale tentar de novo em falhas passageiras: rede, tempo esgotado, 429 e 5xx.
       // Erros como chave inválida (400/403) falham na hora, sem fazer o usuário esperar.
-      let podeRepetir = true;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), tempoLimiteMs);
-
       try {
-        const response = await fetch(urlWithKey, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        console.log(
-          `diagnostic: queryLLM - tentativa ${tentativa}/${maxTentativas} - status:`,
-          response.status,
-          response.statusText
-        );
-
-        const data = await response.json();
-        console.log('diagnostic: queryLLM - resposta completa:', JSON.stringify(data));
-
-        if (!response.ok) {
-          const errorMessage =
-            data?.error?.message ||
-            data?.error?.errors?.[0]?.message ||
-            data?.message ||
-            response.statusText;
-
-          console.error('diagnostic: queryLLM - erro HTTP:', errorMessage);
-          podeRepetir = response.status === 429 || response.status >= 500;
-          throw new Error(`Erro LLM: ${errorMessage}`);
-        }
+        const data = await this.ia.gerar(requestBody, tempoLimiteMs);
+        console.log('diagnostic: queryLLM - tentativa', tentativa, '- resposta completa:', JSON.stringify(data));
 
         const parts: { text?: string; thought?: boolean; functionCall?: { name: string; args?: any } }[] =
           data?.candidates?.[0]?.content?.parts ?? [];
@@ -1202,6 +1167,7 @@ export class HomePage {
         return { tipo: 'texto', texto: answer };
       } catch (error) {
         console.error('diagnostic: queryLLM - erro:', error);
+        const podeRepetir = !(error instanceof ErroIA) || error.podeRepetir;
 
         if (!podeRepetir || tentativa >= maxTentativas) {
           throw error;
@@ -1211,8 +1177,6 @@ export class HomePage {
           this.statusText = 'Só um instante...';
         });
         await this.wait(1500 * tentativa);
-      } finally {
-        clearTimeout(timer);
       }
     }
 

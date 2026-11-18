@@ -2,8 +2,6 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
-import { Directory, Filesystem } from '@capacitor/filesystem';
-import { environment } from '../../environments/environment';
 
 /** Plugin nativo (android/.../KiraVozPlugin.java): voz natural offline (Supertonic 2) com o sherpa-onnx. */
 interface KiraVozPlugin {
@@ -14,7 +12,7 @@ interface KiraVozPlugin {
 const KiraVoz = registerPlugin<KiraVozPlugin>('KiraVoz');
 
 /** Qual voz a KIRA usa como principal. A voz do aparelho é sempre a reserva. */
-export type ModoVoz = 'natural' | 'leda' | 'aparelho';
+export type ModoVoz = 'natural' | 'aparelho';
 
 export interface OpcaoVoz {
   /** Índice da voz na lista completa do plugin (é o que o `speak` recebe). */
@@ -34,25 +32,11 @@ export interface OpcaoVelocidade {
 const CHAVE_VOZ = 'kira.voz';
 const CHAVE_VELOCIDADE = 'kira.velocidade';
 const CHAVE_MODO = 'kira.modoVoz';
-const CHAVE_COTA_LEDA = 'kira.vozLedaEsgotadaAte';
 const IDIOMA = 'pt-BR';
-
-/**
- * Voz "Leda" gerada pelo Gemini (TTS). Soa muito mais humana, mas no plano
- * gratuito o modelo de voz tem só ~10 requisições por dia por projeto.
- * Quando a cota acaba (ou falta internet), a KIRA usa a voz do aparelho.
- */
-const VOZ_LEDA = {
-  url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent',
-  nome: 'Leda',
-  tempoLimiteMs: 12000,
-  pastaCache: 'voz-leda',
-};
 
 /**
  * Fala da KIRA. A voz principal é escolhida no menu:
  * - natural: Supertonic 2 (voz F3) rodando no próprio celular (offline, sem limite);
- * - Leda: Gemini TTS (a mais natural, mas ~10 falas/dia no plano gratuito);
  * - aparelho: motor de voz do Android (Google TTS), preferindo as vozes neurais.
  * Se a principal falhar, a KIRA fala com a voz do aparelho.
  */
@@ -71,12 +55,8 @@ export class VozService {
   readonly modo$ = new BehaviorSubject<ModoVoz>(this.lerModo());
   /** A voz natural só existe no app Android (no navegador cai na voz do aparelho). */
   readonly naturalSuportada = Capacitor.getPlatform() === 'android';
-  /** Momento (ms) até quando a cota gratuita da Leda está esgotada; 0 = disponível. */
-  readonly ledaEsgotadaAte$ = new BehaviorSubject<number>(Number(this.ler(CHAVE_COTA_LEDA)) || 0);
 
   private carregamento?: Promise<void>;
-  private audioAtual?: HTMLAudioElement;
-  private pararAudioAtual?: () => void;
   /** Contador de falas: permite descartar um áudio que chegou depois do "Parar". */
   private falaAtual = 0;
   private preparoNatural?: Promise<boolean>;
@@ -106,10 +86,6 @@ export class VozService {
     if (modo === 'natural') {
       void this.prepararNatural();
     }
-  }
-
-  ledaDisponivel(): boolean {
-    return Date.now() >= this.ledaEsgotadaAte$.value;
   }
 
   /**
@@ -153,197 +129,16 @@ export class VozService {
       }
     }
 
-    if (modo === 'leda' && this.ledaDisponivel() && navigator.onLine !== false) {
-      const audio = await this.obterAudioLeda(texto);
-      if (fala !== this.falaAtual) {
-        return; // "Parar" foi tocado enquanto o áudio era gerado.
-      }
-      if (audio) {
-        try {
-          await this.tocar(audio);
-          return;
-        } catch (err) {
-          console.warn('diagnostic: VozService - não tocou a Leda, usando a voz do aparelho', err);
-        }
-      }
-    }
     await this.falarNoAparelho(texto);
   }
 
-  /** Interrompe qualquer fala em andamento (Leda ou voz do aparelho). */
+  /** Interrompe qualquer fala em andamento (voz natural ou do aparelho). */
   async parar(): Promise<void> {
     this.falaAtual++;
-    this.pararAudioAtual?.();
     if (this.naturalSuportada) {
       await KiraVoz.parar().catch(() => undefined);
     }
     await TextToSpeech.stop();
-  }
-
-  // ---------- Voz Leda (Gemini TTS) ----------
-
-  /** Devolve o áudio (data URI) da frase, do cache ou gerado agora; `null` se não der. */
-  private async obterAudioLeda(texto: string): Promise<string | null> {
-    // Frases repetidas (saudações, "Lanterna ligada"...) não gastam cota de novo.
-    const arquivo = `${VOZ_LEDA.pastaCache}/${this.hash(`${VOZ_LEDA.nome}|${texto}`)}.wav`;
-    try {
-      const { data } = await Filesystem.readFile({ path: arquivo, directory: Directory.Cache });
-      if (typeof data === 'string' && data.length) {
-        console.log('diagnostic: VozService - Leda do cache');
-        return `data:audio/wav;base64,${data}`;
-      }
-    } catch {
-      // Não está no cache: segue para gerar.
-    }
-
-    const gerado = await this.gerarAudioLeda(texto);
-    if (!gerado) {
-      return null;
-    }
-
-    try {
-      await Filesystem.writeFile({
-        path: arquivo,
-        data: gerado.base64,
-        directory: Directory.Cache,
-        recursive: true,
-      });
-    } catch (err) {
-      console.warn('diagnostic: VozService - não foi possível guardar o áudio no cache', err);
-    }
-
-    return `data:${gerado.mime};base64,${gerado.base64}`;
-  }
-
-  private async gerarAudioLeda(texto: string): Promise<{ base64: string; mime: string } | null> {
-    const chave = environment.llmApiKey;
-    if (!chave) {
-      return null;
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), VOZ_LEDA.tempoLimiteMs);
-
-    try {
-      const resposta = await fetch(`${VOZ_LEDA.url}?key=${chave}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          // O modelo de voz não aceita instrução de sistema e pode ler em voz alta
-          // qualquer instrução no texto; por isso vai só a frase.
-          contents: [{ parts: [{ text: texto }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOZ_LEDA.nome } } },
-          },
-        }),
-      });
-      const dados = await resposta.json();
-
-      if (!resposta.ok) {
-        console.warn('diagnostic: VozService - Leda HTTP', resposta.status, dados?.error?.message);
-        if (resposta.status === 429) {
-          this.marcarCotaEsgotada(dados);
-        }
-        return null;
-      }
-
-      const audio = dados?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData?.data)?.inlineData;
-      if (!audio) {
-        return null;
-      }
-
-      // O modelo devolve WAV; se vier PCM cru (audio/L16), embrulha num cabeçalho WAV.
-      const mime: string = audio.mimeType || 'audio/wav';
-      if (/l16|pcm/i.test(mime)) {
-        const taxa = Number(/rate=(\d+)/.exec(mime)?.[1]) || 24000;
-        return { base64: this.pcmParaWav(audio.data, taxa), mime: 'audio/wav' };
-      }
-      return { base64: audio.data, mime };
-    } catch (err) {
-      console.warn('diagnostic: VozService - Leda falhou', err);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /** Guarda até quando a cota está esgotada, usando o `retryDelay` que o Google informa. */
-  private marcarCotaEsgotada(dados: any): void {
-    const retry: string | undefined = dados?.error?.details?.find((d: any) => d?.retryDelay)?.retryDelay;
-    const segundos = Number(/(\d+)/.exec(retry ?? '')?.[1]) || 60 * 60;
-    const ate = Date.now() + segundos * 1000;
-    this.ledaEsgotadaAte$.next(ate);
-    this.gravar(CHAVE_COTA_LEDA, String(ate));
-    console.warn('diagnostic: VozService - cota da Leda esgotada até', new Date(ate).toLocaleString('pt-BR'));
-  }
-
-  private tocar(fonte: string): Promise<void> {
-    this.pararAudioAtual?.();
-
-    return new Promise<void>((resolve, reject) => {
-      const audio = new Audio(fonte);
-      this.audioAtual = audio;
-
-      const encerrar = (erro?: unknown) => {
-        audio.onended = null;
-        audio.onerror = null;
-        if (this.audioAtual === audio) {
-          this.audioAtual = undefined;
-          this.pararAudioAtual = undefined;
-        }
-        if (erro) {
-          reject(erro);
-        } else {
-          resolve();
-        }
-      };
-
-      this.pararAudioAtual = () => {
-        audio.pause();
-        encerrar();
-      };
-      audio.onended = () => encerrar();
-      audio.onerror = () => encerrar(new Error('Falha ao tocar o áudio da voz Leda.'));
-      audio.play().catch(encerrar);
-    });
-  }
-
-  private pcmParaWav(base64Pcm: string, taxa: number): string {
-    const pcm = Uint8Array.from(atob(base64Pcm), c => c.charCodeAt(0));
-    const cabecalho = new DataView(new ArrayBuffer(44));
-    const escrever = (pos: number, s: string) => [...s].forEach((c, i) => cabecalho.setUint8(pos + i, c.charCodeAt(0)));
-    escrever(0, 'RIFF');
-    cabecalho.setUint32(4, 36 + pcm.length, true);
-    escrever(8, 'WAVE');
-    escrever(12, 'fmt ');
-    cabecalho.setUint32(16, 16, true);
-    cabecalho.setUint16(20, 1, true); // PCM
-    cabecalho.setUint16(22, 1, true); // mono
-    cabecalho.setUint32(24, taxa, true);
-    cabecalho.setUint32(28, taxa * 2, true);
-    cabecalho.setUint16(32, 2, true);
-    cabecalho.setUint16(34, 16, true);
-    escrever(36, 'data');
-    cabecalho.setUint32(40, pcm.length, true);
-
-    const wav = new Uint8Array(44 + pcm.length);
-    wav.set(new Uint8Array(cabecalho.buffer), 0);
-    wav.set(pcm, 44);
-    let binario = '';
-    for (let i = 0; i < wav.length; i += 0x8000) {
-      binario += String.fromCharCode(...wav.subarray(i, i + 0x8000));
-    }
-    return btoa(binario);
-  }
-
-  private hash(texto: string): string {
-    let h = 5381;
-    for (let i = 0; i < texto.length; i++) {
-      h = ((h << 5) + h + texto.charCodeAt(i)) | 0;
-    }
-    return (h >>> 0).toString(36) + texto.length.toString(36);
   }
 
   // ---------- Voz do aparelho ----------
@@ -428,8 +223,8 @@ export class VozService {
   }
 
   private lerModo(): ModoVoz {
-    const salvo = this.ler(CHAVE_MODO);
-    return salvo === 'leda' || salvo === 'aparelho' || salvo === 'natural' ? salvo : 'natural';
+    // Quem tinha escolhido a Leda (removida na 1.3.2) volta para a voz natural.
+    return this.ler(CHAVE_MODO) === 'aparelho' ? 'aparelho' : 'natural';
   }
 
   private ler(chave: string): string | null {
