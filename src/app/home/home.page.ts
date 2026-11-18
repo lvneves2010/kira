@@ -202,13 +202,25 @@ export class HomePage {
     this.speechRecognition = new SpeechRecognition();
     this.speechRecognition.lang = 'pt-BR';
     this.speechRecognition.interimResults = false;
-    this.speechRecognition.maxAlternatives = 1;
+    // Várias alternativas: uma palavra curta como "Kira" às vezes só aparece na segunda.
+    this.speechRecognition.maxAlternatives = 5;
 
     this.isListeningForCommand = true;
     this.statusText = 'Escutando... fale agora.';
 
+    // O reconhecedor do Google não transcreve "Kira" dita sozinha: devolve um resultado
+    // vazio, às vezes sem nem avisar erro. Como tocar no botão já é chamar a Kira, uma escuta
+    // que termina sem texto é tratada como o chamado ("Oi! Pode falar...") e ela fica ouvindo.
+    let teveResultado = false;
+    let erroGrave = false;
+
     this.speechRecognition.onresult = async (event: any) => {
-      const transcript = (event.results[0][0].transcript || '').toLowerCase().trim();
+      teveResultado = true;
+      const alternativas: string[] = Array.from(event.results[0] as ArrayLike<any>).map(a =>
+        (a?.transcript || '').toLowerCase().trim()
+      );
+      console.log('diagnostic: speech alternativas=', JSON.stringify(alternativas));
+      const transcript = this.escolherAlternativa(alternativas);
       console.log('diagnostic: speech transcript=', transcript);
       const normalized = this.normalizeTranscript(transcript);
       console.log('diagnostic: normalized transcript=', normalized);
@@ -216,12 +228,17 @@ export class HomePage {
     };
 
     this.speechRecognition.onerror = (ev: any) => {
-      console.warn('diagnostic: speech error', ev);
       const erro = ev.error || ev.message || String(ev);
+      console.warn('diagnostic: speech error=', erro);
+      // Silêncio ou fala não reconhecida: o onend trata como chamado (ver acima).
+      if (erro === 'no-speech' || erro === 'no-match') {
+        return;
+      }
+      erroGrave = true;
       this.ngZone.run(() => {
-        // Silêncio ou fala não reconhecida é normal: só avisa no status, sem alerta.
-        if (erro === 'no-speech' || erro === 'no-match' || erro === 'aborted') {
-          this.statusText = 'Não ouvi nada. Toque e fale de novo.';
+        // Escuta interrompida (ex.: botão Parar): só volta ao normal, sem alerta.
+        if (erro === 'aborted') {
+          this.statusText = 'Pronto. Toque para falar com a Kira.';
           return;
         }
         this.errorMessage =
@@ -241,6 +258,10 @@ export class HomePage {
           this.statusText = 'Pronto. Toque para falar com a Kira.';
         }
       });
+      if (!teveResultado && !erroGrave) {
+        console.log('diagnostic: escuta terminou sem texto - tratando como chamado da Kira');
+        void this.processRecognizedCommand('kira');
+      }
     };
 
     try {
@@ -929,10 +950,12 @@ export class HomePage {
       '- Português do Brasil, tom natural e acolhedor, como uma amiga que entende do assunto.',
       '- Seja breve: em geral uma a três frases. Só se estenda se o usuário pedir detalhes.',
       '- Nada de markdown, listas, tópicos, títulos, emojis, links ou tabelas. Se houver vários itens, cite-os numa frase corrida.',
-      '- Escreva números, siglas e símbolos do jeito que se fala quando isso ajudar a leitura (ex.: "vinte graus", não "20°C").',
+      '- Escreva números com algarismos, nunca por extenso (ex.: "em 1500", "20°C", "35%", "14h30", "R$ 10,50"): o app converte para a fala.',
+      '- Siglas e outros símbolos, escreva do jeito que se fala.',
       '- Vá direto ao ponto. Não repita a pergunta e não comece sempre com "Claro" ou "Ótima pergunta".',
       '- Varie as palavras e pode usar expressões leves do dia a dia, sem exagerar nas gírias.',
       '- Se a pergunta estiver ambígua ou incompleta (o reconhecimento de voz pode errar palavras), interprete o mais provável ou faça uma pergunta curta.',
+      '- Só chame fechar_aplicativo se o usuário pedir claramente para fechar, sair ou encerrar. Uma palavra solta ou sem sentido nunca é pedido para fechar.',
       '- Se não souber algo ou não tiver acesso a dados em tempo real, diga isso com naturalidade, sem inventar.',
       '- Não diga que é um modelo de linguagem, a menos que perguntem.',
       '- Quando o usuário pedir uma ação que existe nas suas funções (fechar o aplicativo, lanterna, previsão do tempo, distância e tempo de viagem, caminho no mapa, lugar mais próximo, repetir, salvar a resposta), chame a função em vez de responder com texto, mesmo que ele use outras palavras. Se pedir algo que nenhuma função faz, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
@@ -962,8 +985,35 @@ export class HomePage {
   // então aceitamos variações e procuramos o gatilho nas duas primeiras palavras.
   private static readonly KIRA_TRIGGER_WORDS = ['kira', 'kyra', 'kiara', 'quira', 'kirah'];
 
+  /**
+   * Fica com a primeira alternativa do reconhecimento, a não ser que ela não tenha o nome
+   * da Kira e outra alternativa seja só o chamado ("Kira"): aí a outra vence.
+   */
+  private escolherAlternativa(alternativas: string[]): string {
+    const primeira = alternativas[0] ?? '';
+    if (this.matchKiraTrigger(this.normalizeTranscript(primeira)) !== null) {
+      return primeira;
+    }
+    return alternativas.find(a => this.matchKiraTrigger(this.normalizeTranscript(a)) === '') ?? primeira;
+  }
+
+  /**
+   * O que o reconhecimento costuma entender quando a pessoa diz só "Kira".
+   * Só valem como chamado quando são a frase inteira ("tira uma foto" segue normal).
+   */
+  private static readonly KIRA_SOZINHA = new Set([
+    'tira', 'ira', 'lira', 'gira', 'mira', 'cira', 'sira', 'guira', 'quila', 'kila', 'kia', 'chira', 'quiara', 'kyara', 'quero',
+  ]);
+
+  /** Palavras que mostram que a pessoa quer mesmo fechar o app (ver queryLLM). */
+  private static readonly PEDIDO_DE_FECHAR =
+    /\b(fech\w*|sai\w*|encerr\w*|deslig\w*|termin\w*|finaliz\w*|tchau|adeus|ate logo|ate mais|acab\w*|chega|basta)\b/;
+
   private matchKiraTrigger(normalized: string): string | null {
     const words = normalized.split(' ').filter(Boolean);
+    if (words.length === 1 && HomePage.KIRA_SOZINHA.has(words[0])) {
+      return '';
+    }
     const searchLimit = Math.min(2, words.length);
 
     for (let i = 0; i < searchLimit; i++) {
@@ -1144,6 +1194,14 @@ export class HomePage {
 
         // A IA entendeu a frase como um pedido de ação do app.
         const chamada = parts.find(p => p.functionCall)?.functionCall;
+
+        // Fechar o app é irreversível: só vale se a frase falar mesmo em encerrar.
+        // Ex.: o reconhecimento ouviu "tira" (era "Kira") e a IA entendeu "sair".
+        if (chamada?.name === 'fechar_aplicativo' && !HomePage.PEDIDO_DE_FECHAR.test(question)) {
+          console.warn('diagnostic: queryLLM - IA pediu para fechar sem a frase pedir; perguntando antes');
+          return { tipo: 'texto', texto: 'Não entendi direito. Se quiser que eu feche o aplicativo, é só dizer "fechar".' };
+        }
+
         const acao = chamada ? this.acaoDaFuncao(chamada.name, chamada.args) : null;
         if (acao) {
           console.log('diagnostic: queryLLM - IA pediu a ação:', chamada?.name, JSON.stringify(chamada?.args));

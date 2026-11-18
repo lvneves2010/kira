@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { TextToSpeech, SpeechSynthesisVoice } from '@capacitor-community/text-to-speech';
+import { numerosParaFala } from './numeros-por-extenso';
 
 /** Plugin nativo (android/.../KiraVozPlugin.java): voz natural offline (Supertonic 2) com o sherpa-onnx. */
 interface KiraVozPlugin {
@@ -112,8 +113,11 @@ export class VozService {
    * Fala o texto e só resolve quando terminar.
    * `somenteAparelho` usa direto a voz do aparelho (prévia das vozes do aparelho).
    */
-  async falar(texto: string, somenteAparelho = false): Promise<void> {
+  async falar(textoOriginal: string, somenteAparelho = false): Promise<void> {
     const fala = ++this.falaAtual;
+    // Números viram palavras aqui ("1500" -> "mil e quinhentos"), com regras fixas,
+    // em vez de depender da IA ou do motor de voz acertarem a leitura.
+    const texto = numerosParaFala(textoOriginal);
     const modo = somenteAparelho ? 'aparelho' : this.modo$.value;
 
     if (modo === 'natural' && (await this.prepararNatural())) {
