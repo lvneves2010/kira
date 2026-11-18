@@ -18,17 +18,6 @@
           </ion-radio>
         </ion-item>
         <ion-item>
-          <ion-radio value="leda" justify="space-between">
-            <ion-label class="ion-text-wrap">
-              <h2>Leda (IA do Google)</h2>
-              <p>A mais natural, mas só cerca de 10 falas grátis por dia e precisa de internet.</p>
-              <p *ngIf="ledaEsgotada(voz.ledaEsgotadaAte$ | async)" class="aviso-cota">
-                Cota de hoje esgotada. Volta em {{ voz.ledaEsgotadaAte$ | async | date: 'dd/MM HH:mm' }}.
-              </p>
-            </ion-label>
-          </ion-radio>
-        </ion-item>
-        <ion-item>
           <ion-radio value="aparelho" justify="space-between">
             <ion-label class="ion-text-wrap">
               <h2>Voz do aparelho</h2>

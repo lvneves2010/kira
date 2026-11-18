@@ -8,7 +8,7 @@ Assistente virtual por voz para Android, da **Help Soluções em Informática (H
   - A pasta antiga `C:\repos\HSI\jarvis` foi apagada em 2026-11-10, depois de conferir que não tinha nada que faltasse aqui.
   - Para apagar pastas com caminhos longos no Windows (ex.: `node_modules`), use `cmd /c 'rd /s /q "\\?\C:\caminho"'`. O `Remove-Item` falha nesses casos.
 - O que o clone **não** traz (está no `.gitignore`) e foi copiado à mão da pasta antiga:
-  - `src/environments/environment.ts` e `environment.prod.ts`, com a chave do Gemini.
+  - `src/environments/environment.ts` e `environment.prod.ts`, com a configuração do Firebase e a chave antiga do Gemini.
   - Se perder esses arquivos, recrie a partir dos `.example`.
   - `node_modules` e as pastas geradas do Android saem de `npm ci` + `npm run build:android`.
 - Celular de testes: Xiaomi (modelo 25080RABDG). O app instalado é o `br.com.hsi.kira`. O app antigo `com.playitright.app` (o mesmo nome "K.I.R.A." e o mesmo ícone) deve ser desinstalado. Para conferir: `adb shell pm list packages | grep -E "kira|playitright"`.
@@ -57,10 +57,7 @@ Tudo fica em `src/app/services/voz.service.ts`, e a escolha é feita no menu de 
   - **Licença OpenRAIL-M:** o uso comercial é permitido, mas as restrições de uso precisam ser repassadas ao usuário. Inclua isso nos termos e na política de privacidade antes da Play. A licença vai em `assets/supertonic/LICENSE-modelo.txt`, e o crédito aparece no menu.
   - **Rollback:** existe a tag `antes-supertonic`. Use `git revert --no-edit antes-supertonic..HEAD` (para reverter só os commits da voz, liste-os com `git log antes-supertonic..HEAD`) e apague as duas pastas acima.
 - **Voz do aparelho:** usa o Google TTS e prefere as vozes "network" (neurais). Sem internet, troca para a versão offline da mesma voz.
-- **Leda (opcional, desligada por padrão):** Gemini TTS (`gemini-3.8-flash-lite-tts`).
-  - No plano gratuito são ~10 falas por dia **por projeto**, ou seja, todos os usuários somados.
-  - Quando a cota acaba, volta para a voz do aparelho.
-  - Para usar em escala, é preciso faturamento e um backend para a chave.
+- **Leda (Gemini TTS): removida na 1.3.2.** Tinha só ~10 falas por dia por projeto e era o último uso da chave do Gemini no APK. Quem a tinha escolhido volta para a voz natural.
 - **Já testado e descartado (2026-11-17):** vozes neurais offline no celular.
   - Piper (miro, jeff) e Coqui: masculinas, com sotaque carioca. A Piper dii é feminina, mas a licença é não comercial.
   - Pocket TTS português (voz "vera") com o sherpa-onnx: engolia o começo das frases (~11% de palavras perdidas), errava frases com menos de 6 palavras e aumentava o APK de 10 MB para 248 MB.
@@ -70,10 +67,22 @@ Tudo fica em `src/app/services/voz.service.ts`, e a escolha é feita no menu de 
 
 Fonte única: `"version"` do `package.json`. O rodapé lê de lá e o `android/app/build.gradle` também: `versionName` é a versão e `versionCode` = MAJOR·10000 + MINOR·100 + PATCH. **Suba a versão no package.json antes de cada envio à Play.** A numeração recomeçou em 1.0.0 com o novo applicationId.
 
-## Environments e chave da IA
+## IA (Gemini pelo Firebase AI Logic)
 
-- `src/environments/environment.ts` e `environment.prod.ts` estão no `.gitignore`. Para criá-los, copie dos `.example` e preencha `llmApiKey` e `admobBannerAndroid`.
-- **A chave do Gemini vai embutida no APK.** Qualquer pessoa extrai do app publicado. Antes da Play, passe a chamada da IA por um backend/proxy (ou ao menos restrinja e limite a chave no Google Cloud). A chave antiga também ficou no histórico público do git e precisa ser revogada.
+- Tudo passa por `src/app/services/ia.service.ts`, chamado pelo `queryLLM` da home. O corpo da requisição é o mesmo da API REST do Gemini (function calling incluído).
+- **Caminho principal: Firebase AI Logic** (SDK JS `firebase`, backend "Gemini Developer API") protegido pelo **App Check**. Não há segredo no APK.
+  - O SDK JS roda na WebView e não tem Play Integrity. O token vem do plugin nativo `android/.../KiraAppCheckPlugin.java` (registrado no `MainActivity`) e entra no SDK por um `CustomProvider`.
+  - Build de debug: provedor de debug. O logcat mostra "Enter this debug secret into the allow list..."; cadastre esse token no console (App Check > Apps > Gerenciar tokens de debug).
+  - Build de release: Play Integrity. Exige os SHA-256 das chaves de assinatura (upload e da Play) no Firebase e, na prática, o app instalado pela Play (teste interno).
+  - Precisa do `android/app/google-services.json` (o `build.gradle` só aplica o plugin `google-services` se ele existir) e de `firebase: { apiKey, projectId, appId }` nos environments.
+- **Custo zero:** projeto no plano **Spark, sem conta de faturamento**, e backend "Gemini Developer API" (o Vertex exige faturamento). Quando a cota gratuita acaba, a chamada é recusada (429), sem cobrança. A cota é do projeto (todos os usuários somados); defina um limite por usuário no console do AI Logic.
+- **Transição:** se o Firebase não estiver configurado ou falhar, o `IaService` usa a chave antiga (`llmApiUrl`/`llmApiKey`). Depois de validar o Firebase no celular, apague esses campos e o `gerarComChaveAntiga`, e **revogue a chave** (ela também está no histórico público do git). Ponto de recuperação: tag `antes-firebase`.
+- No navegador (`npm start`) não há App Check, então a IA usa a chave antiga do `environment.ts`.
+- Evolução possível (adiada): Gemini Nano no aparelho via Firebase AI Logic híbrido. No aparelho não há function calling nem conversa com várias rodadas, e o português não foi validado.
+
+## Environments
+
+- `src/environments/environment.ts` e `environment.prod.ts` estão no `.gitignore`. Para criá-los, copie dos `.example` e preencha `firebase`, `llmApiKey` (transição) e `admobBannerAndroid`.
 
 ## Publicidade (AdMob)
 
@@ -110,6 +119,6 @@ O celular de testes é um Xiaomi. Ele pede confirmação na tela a cada `adb ins
 - Antes do primeiro envio:
   - criar o app no AdMob e preencher `admobAppId` e `admobBannerAndroid`;
   - marcar "Contém anúncios";
-  - preencher o Data safety: áudio do microfone (reconhecimento de voz), localização aproximada/precisa (previsão do tempo, distâncias e lugares próximos; as coordenadas vão para Open-Meteo, Photon, OSRM/FOSSGIS e Nominatim/Overpass), texto enviado ao Gemini e ID de publicidade (AdMob);
-  - ter uma política de privacidade que cite microfone, localização (e os serviços de mapa que a recebem), IA de terceiros e AdMob;
-  - resolver a chave do Gemini (seção acima).
+  - preencher o Data safety: áudio do microfone (reconhecimento de voz), localização aproximada/precisa (previsão do tempo, distâncias e lugares próximos; as coordenadas vão para Open-Meteo, Photon, OSRM/FOSSGIS e Nominatim/Overpass), texto enviado ao Gemini pelo Firebase, App Check (integridade do app) e ID de publicidade (AdMob);
+  - ter uma política de privacidade que cite microfone, localização (e os serviços de mapa que a recebem), IA de terceiros (no plano gratuito o Google pode usar o conteúdo para melhorar os modelos) e AdMob;
+  - concluir a migração da IA para o Firebase e remover a chave antiga (seção "IA").

@@ -18,6 +18,7 @@ public class MainActivity extends BridgeActivity {
 	public void onCreate(Bundle savedInstanceState) {
 		// Plugins locais precisam ser registrados antes do super.onCreate.
 		registerPlugin(KiraVozPlugin.class);
+		registerPlugin(KiraAppCheckPlugin.class);
 		super.onCreate(savedInstanceState);
 
 		if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||

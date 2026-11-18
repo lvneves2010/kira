@@ -82,6 +82,11 @@ dependencies {
     implementation project(':capacitor-android')
     // Voz natural offline (Supertonic 2). O .aar e o modelo saem de scripts/preparar_voz_natural.py.
     implementation(name: 'sherpa-onnx-2.0.1', ext: 'aar')
+    // IA pelo Firebase AI Logic: o App Check (Play Integrity) protege a chamada, sem chave no APK.
+    // O provedor de debug só entra no build de debug (ver KiraAppCheckPlugin.java).
+    implementation platform('com.google.firebase:firebase-bom:35.1.0')
+    implementation 'com.google.firebase:firebase-appcheck-playintegrity'
+    debugImplementation 'com.google.firebase:firebase-appcheck-debug'
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
