@@ -138,8 +138,26 @@ function decimalPorExtenso(inteiro: number, decimais: string, feminino: boolean)
   return `${inteiroPorExtenso(inteiro, feminino)} vírgula ${fracao}`;
 }
 
-/** Decide o gênero pela palavra seguinte ("duas horas", "duzentas pessoas", "dois dias"). */
-function femininoPelaSeguinte(depois: string): boolean {
+/** Palavras em "a"/"as" que não são substantivos: "em 1500 pela frota" não é feminino. */
+const NAO_SUBSTANTIVOS = new Set([
+  'a', 'as', 'da', 'das', 'na', 'nas', 'pela', 'pelas', 'para', 'uma', 'umas', 'essa', 'essas', 'esta', 'estas',
+  'nessa', 'nessas', 'nesta', 'nestas', 'dessa', 'dessas', 'desta', 'destas', 'aquela', 'aquelas', 'sua', 'suas',
+  'minha', 'minhas', 'nossa', 'nossas', 'toda', 'todas', 'cada', 'contra', 'agora', 'ainda', 'fora', 'era', 'eras',
+  'outra', 'outras', 'mesma', 'mesmas', 'nenhuma', 'alguma', 'algumas', 'quando', 'onde', 'ja', 'apenas', 'mais',
+]);
+/** Palavras antes de um ano: "em 1500", "desde 1822" (ano é sempre masculino). */
+const ANTES_DE_ANO = new Set(['em', 'de', 'desde', 'até', 'ate', 'ano', 'anos', 'década', 'decada']);
+
+/**
+ * Decide o gênero pela palavra seguinte ("duas horas", "duzentas pessoas", "dois dias").
+ * Com valor 1 o substantivo vem no singular ("uma hora"); nos demais, no plural.
+ */
+function femininoPelaSeguinte(valor: number, antes: string, depois: string): boolean {
+  const anterior = antes.split(/[^\p{L}]+/u).filter(Boolean).pop()?.toLowerCase();
+  if (valor >= 1000 && valor <= 2999 && Number.isInteger(valor) && anterior && ANTES_DE_ANO.has(anterior)) {
+    return false;
+  }
+
   // O split já descarta espaços e pontuação do começo (o filter tira os vazios).
   const palavras = depois.split(/[^\p{L}-]+/u).filter(Boolean);
   let palavra = palavras[0]?.toLowerCase();
@@ -152,13 +170,14 @@ function femininoPelaSeguinte(depois: string): boolean {
       palavra = palavras[2]?.toLowerCase();
     }
   }
-  if (!palavra) {
+  if (!palavra || NAO_SUBSTANTIVOS.has(palavra)) {
     return false;
   }
   if (FEMININAS.has(palavra)) {
     return true;
   }
-  return /as?$/.test(palavra) && !MASCULINAS_EM_A.has(palavra);
+  const terminacao = valor === 1 ? /a$/ : /as$/;
+  return terminacao.test(palavra) && !MASCULINAS_EM_A.has(palavra);
 }
 
 function numeroDoTexto(texto: string): { inteiro: number; decimais: string } {
@@ -230,8 +249,10 @@ export function numerosParaFala(texto: string): string {
       // Negativos isolados: "-5" -> "menos cinco".
       .replace(new RegExp(String.raw`(^|[\s(])-(${NUMERO})`, 'g'), (_, antes, n) => `${antes}menos ${n}`)
       // Demais números, com o gênero da palavra seguinte.
-      .replace(new RegExp(String.raw`\b(${NUMERO})\b`, 'g'), (n, _g, posicao: number, completo: string) =>
-        lerNumero(n, femininoPelaSeguinte(completo.slice(posicao + n.length)))
-      )
+      .replace(new RegExp(String.raw`\b(${NUMERO})\b`, 'g'), (n, _g, posicao: number, completo: string) => {
+        const valor = Number(n.replace(/\./g, '').replace(',', '.'));
+        const feminino = femininoPelaSeguinte(valor, completo.slice(0, posicao), completo.slice(posicao + n.length));
+        return lerNumero(n, feminino);
+      })
   );
 }
