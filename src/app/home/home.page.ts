@@ -23,12 +23,37 @@ import { VoiceActionComponent } from './components/voice-action/voice-action.com
 import { SettingsMenuComponent } from './components/settings-menu/settings-menu.component';
 import { VoiceCommandsService, VoiceCommandMatch, AsyncCommandKind } from '../services/voice-commands.service';
 import { WeatherService } from '../services/weather.service';
+import {
+  Coordenadas,
+  LocalizacaoService,
+  distanciaEmMetros,
+  falarDistancia,
+  falarDuracao,
+} from '../services/localizacao.service';
+import {
+  ModoViagem,
+  PedidoLocal,
+  PedidoTempo,
+  diasDoTexto,
+  encontrarCategoria,
+  interpretarPedidoDeLocal,
+  interpretarPedidoDoTempo,
+  normalizar,
+} from '../services/pedidos-de-local';
 import { AnunciosService } from '../services/anuncios.service';
 import { VozService } from '../services/voz.service';
 import { RodapeEmpresaComponent } from '../compartilhado/rodape-empresa/rodape-empresa.component';
 
 /** O que a IA devolve: um texto para falar ou uma ação do app para executar. */
-type RespostaIA = { tipo: 'texto'; texto: string } | { tipo: 'acao'; acao: AsyncCommandKind | 'salvar' };
+type AcaoIA = AsyncCommandKind | 'salvar' | PedidoLocal;
+type RespostaIA = { tipo: 'texto'; texto: string } | { tipo: 'acao'; acao: AcaoIA };
+
+const MODO_FALADO: Record<ModoViagem, string> = {
+  carro: 'de carro',
+  a_pe: 'a pé',
+  bicicleta: 'de bicicleta',
+  transporte: 'de carro',
+};
 
 @Component({
   selector: 'app-home',
@@ -89,6 +114,10 @@ export class HomePage {
   private readonly ngZone = inject(NgZone);
   private readonly voiceCommands = inject(VoiceCommandsService);
   private readonly weatherService = inject(WeatherService);
+  private readonly localizacao = inject(LocalizacaoService);
+
+  /** Último destino calculado, para "abre o mapa" logo depois de "quanto tempo até X". */
+  private ultimoDestino?: { coords: Coordenadas; modo: ModoViagem };
   private readonly voz = inject(VozService);
 
   constructor() {
@@ -270,6 +299,14 @@ export class HomePage {
       // "Kira" no começo é opcional: tenta primeiro um comando conhecido
       // (ex.: "Kira, feche o aplicativo") e, se nada casar, a frase vai para a IA.
       const frase = kiraRemainder ?? normalized;
+
+      // Perguntas que dependem de onde o usuário está (distância, rota, lugar próximo).
+      const pedidoLocal = interpretarPedidoDeLocal(frase);
+      if (pedidoLocal) {
+        await this.handlePedidoLocal(normalized, pedidoLocal);
+        return;
+      }
+
       const commandResult = this.voiceCommands.match(frase);
       await this.executeCommandResult(normalized, commandResult, frase);
     } catch (e) {
@@ -316,7 +353,11 @@ export class HomePage {
     await this.speakResponse(resposta);
   }
 
-  private async executarAcaoDaIA(normalized: string, acao: AsyncCommandKind | 'salvar'): Promise<void> {
+  private async executarAcaoDaIA(normalized: string, acao: AcaoIA): Promise<void> {
+    if (typeof acao === 'object') {
+      await this.handlePedidoLocal(normalized, acao);
+      return;
+    }
     if (acao === 'salvar') {
       if (this.lastResponseText) {
         await this.saveResponseToFile();
@@ -358,6 +399,11 @@ export class HomePage {
       return;
     }
 
+    if (commandResult.requiresAsyncHandling === 'weather') {
+      await this.handleWeatherRequest(normalized, interpretarPedidoDoTempo(frase));
+      return;
+    }
+
     if (commandResult.requiresAsyncHandling === 'llm') {
       await this.handleLlmQuestion(normalized, frase, commandResult.response);
       return;
@@ -365,11 +411,6 @@ export class HomePage {
 
     if (commandResult.requiresAsyncHandling === 'repeat') {
       await this.handleRepeatRequest(normalized);
-      return;
-    }
-
-    if (commandResult.requiresAsyncHandling === 'weather') {
-      await this.handleWeatherRequest(normalized);
       return;
     }
 
@@ -404,7 +445,7 @@ export class HomePage {
     this.isListeningForSave = false;
   }
 
-  private async handleWeatherRequest(normalized: string): Promise<void> {
+  private async handleWeatherRequest(normalized: string, pedido?: PedidoTempo): Promise<void> {
     this.ngZone.run(() => {
       this.recognizedCommand = normalized;
       this.commandResponse = 'Consultando a previsão do tempo...';
@@ -412,7 +453,7 @@ export class HomePage {
     });
 
     try {
-      const summary = await this.weatherService.getForecastSummary();
+      const summary = await this.weatherService.responder(pedido);
       const cleanSummary = this.sanitizeForSpeech(summary).trim();
       this.ngZone.run(() => {
         this.commandResponse = cleanSummary;
@@ -433,6 +474,189 @@ export class HomePage {
         this.resetAwaitingSave();
       });
     }
+  }
+
+  private async handlePedidoLocal(normalized: string, pedido: PedidoLocal): Promise<void> {
+    console.log('diagnostic: pedido de local ->', JSON.stringify(pedido, (k, v) => (k === 'categoria' && v ? v.nome : v)));
+    switch (pedido.tipo) {
+      case 'tempo':
+        return this.handleWeatherRequest(normalized, pedido.pedido);
+      case 'distancia':
+        return this.handleDistancia(normalized, pedido.destino, pedido.origem, pedido.foco, pedido.modo);
+      case 'rota':
+        return this.falarEAbrirMapa(normalized, `Abrindo o caminho até ${pedido.destino} no Google Maps.`, () =>
+          this.localizacao.abrirRota(pedido.destino, pedido.modo)
+        );
+      case 'proximo':
+        return this.handleLugarProximo(normalized, pedido);
+      case 'abrirMapa': {
+        const destino = this.ultimoDestino;
+        if (!destino) {
+          this.mostrarResposta(normalized, 'Comando reconhecido');
+          await this.speakResponse(
+            'Ainda não tenho um destino para mostrar. Você pode dizer, por exemplo: como chego na avenida paulista?'
+          );
+          return;
+        }
+        return this.falarEAbrirMapa(normalized, 'Abrindo o caminho no Google Maps.', () =>
+          this.localizacao.abrirRota(destino.coords, destino.modo)
+        );
+      }
+    }
+  }
+
+  /** "Quanto tempo daqui até a avenida paulista?", "qual a distância de São Paulo até Porto Alegre?" */
+  private async handleDistancia(
+    normalized: string,
+    nomeDestino: string,
+    nomeOrigem: string | undefined,
+    foco: 'tempo' | 'distancia',
+    modo: ModoViagem
+  ): Promise<void> {
+    this.mostrarResposta(normalized, 'Calculando o caminho...', 'Calculando...');
+
+    let texto: string;
+    try {
+      // Com origem citada, a posição só ajuda a escolher entre lugares de mesmo nome.
+      const aqui = nomeOrigem
+        ? await this.localizacao.obterPosicao().catch(() => undefined)
+        : await this.localizacao.obterPosicao();
+      const [origem, destino] = await Promise.all([
+        nomeOrigem ? this.localizacao.geocodificar(nomeOrigem, aqui) : Promise.resolve(null),
+        this.localizacao.geocodificar(nomeDestino, aqui),
+      ]);
+
+      if (nomeOrigem && !origem) {
+        texto = `Não encontrei ${nomeOrigem} no mapa. Pode falar o nome de outro jeito, com a cidade?`;
+      } else if (!destino) {
+        texto = `Não encontrei ${nomeDestino} no mapa. Pode falar o nome de outro jeito, com a cidade?`;
+      } else {
+        const partida = (origem ?? aqui) as Coordenadas;
+        const trecho = origem ? `de ${origem.descricao} até ${destino.descricao}` : `daqui até ${destino.descricao}`;
+        texto = await this.descreverTrajeto(partida, destino, trecho, foco, modo, !origem);
+        this.ultimoDestino = { coords: destino, modo };
+        texto += ' Se quiser ver o caminho, diga: abre o mapa.';
+      }
+    } catch (err) {
+      console.error('diagnostic: handleDistancia failed ->', err);
+      texto =
+        err instanceof Error && err.message.includes('localização')
+          ? err.message
+          : 'Não consegui calcular esse caminho agora. Verifique a internet e tente de novo.';
+    }
+
+    this.ngZone.run(() => {
+      this.commandResponse = texto;
+      this.statusText = 'Resposta pronta';
+    });
+    await this.speakResponse(texto);
+  }
+
+  private async descreverTrajeto(
+    partida: Coordenadas,
+    destino: Coordenadas & { descricao: string },
+    trecho: string,
+    foco: 'tempo' | 'distancia',
+    modo: ModoViagem,
+    partindoDaqui: boolean
+  ): Promise<string> {
+    const reta = distanciaEmMetros(partida, destino);
+    if (partindoDaqui && reta < 80) {
+      return `Você já está praticamente em ${destino.descricao}!`;
+    }
+
+    const Trecho = trecho.charAt(0).toUpperCase() + trecho.slice(1);
+    try {
+      const t = await this.localizacao.calcularTrajeto(partida, destino, modo);
+      const meio = MODO_FALADO[modo];
+      const transito = modo === 'carro' || modo === 'transporte' ? ', sem contar o trânsito' : '';
+      let texto =
+        foco === 'tempo'
+          ? `${Trecho} são cerca de ${falarDuracao(t.segundos)} ${meio}${transito}, num percurso de ${falarDistancia(t.metros)}.`
+          : `${Trecho} são cerca de ${falarDistancia(t.metros)} pelo caminho, mais ou menos ${falarDuracao(t.segundos)} ${meio}${transito}.`;
+      if (modo === 'transporte') {
+        texto += ' Os horários de ônibus e metrô aparecem no Google Maps.';
+      }
+      return texto;
+    } catch (err) {
+      console.warn('diagnostic: rota falhou, usando linha reta ->', err);
+      return `Não consegui calcular o caminho pelas ruas agora, mas em linha reta, ${trecho} são cerca de ${falarDistancia(reta)}.`;
+    }
+  }
+
+  /** "Tem uma farmácia próxima daqui?": acha a mais próxima, fala e abre o caminho no Google Maps. */
+  private async handleLugarProximo(normalized: string, pedido: Extract<PedidoLocal, { tipo: 'proximo' }>): Promise<void> {
+    const categoria = pedido.categoria;
+    if (!categoria) {
+      await this.falarEAbrirMapa(normalized, `Vou abrir o Google Maps com ${pedido.termo} perto de você.`, () =>
+        this.localizacao.abrirBusca(pedido.termo)
+      );
+      return;
+    }
+
+    const artigo = categoria.artigo === 'a' ? 'a' : 'o';
+    this.mostrarResposta(normalized, `Procurando ${categoria.nome} perto de você...`, 'Procurando...');
+
+    let texto: string;
+    let abrir: () => Promise<void> = () => this.localizacao.abrirBusca(categoria.busca);
+    try {
+      const aqui = await this.localizacao.obterPosicao(true);
+      const lugar = await this.localizacao.lugarMaisProximo(categoria, aqui);
+      if (!lugar) {
+        texto = `Não achei ${artigo} ${categoria.nome} aqui perto no meu mapa. Vou abrir o Google Maps para procurar.`;
+      } else {
+        const proximo = artigo === 'a' ? 'mais próxima' : 'mais próximo';
+        const qual = lugar.nome ? `${artigo} ${lugar.nome}` : `${artigo === 'a' ? 'uma' : 'um'} sem nome no mapa`;
+        texto =
+          `${artigo.toUpperCase()} ${categoria.nome} ${proximo} que encontrei é ${qual}, ` +
+          `a uns ${falarDistancia(lugar.metros)} daqui em linha reta. Vou abrir o caminho no mapa.`;
+        const modo: ModoViagem = lugar.metros < 1500 ? 'a_pe' : 'carro';
+        this.ultimoDestino = { coords: lugar, modo };
+        abrir = () => this.localizacao.abrirRota(lugar, modo);
+      }
+    } catch (err) {
+      // Sem localização ou sem resposta do OpenStreetMap: o Google Maps tem a própria localização e busca.
+      console.error('diagnostic: handleLugarProximo failed ->', err);
+      texto = `Vou abrir o Google Maps com ${categoria.busca} perto de você.`;
+    }
+
+    await this.falarEAbrirMapa(normalized, texto, abrir);
+  }
+
+  /** Fala e depois abre o mapa. Não fica ouvindo: o app vai para segundo plano. */
+  private async falarEAbrirMapa(normalized: string, texto: string, abrir: () => Promise<void>): Promise<void> {
+    this.mostrarResposta(normalized, texto, 'Abrindo o mapa...');
+    this.lastResponseText = texto;
+
+    try {
+      await this.speak(texto);
+    } catch (err) {
+      console.warn('diagnostic: fala antes de abrir o mapa falhou', err);
+    }
+    if (this.speechAborted) {
+      return;
+    }
+
+    try {
+      await abrir();
+      this.ngZone.run(() => {
+        this.statusText = 'Pronto. Toque para falar com a Kira.';
+        this.resetAwaitingSave();
+      });
+    } catch (err) {
+      console.error('diagnostic: abrir mapa falhou ->', err);
+      const message = 'Não consegui abrir o Google Maps neste aparelho.';
+      this.ngZone.run(() => (this.commandResponse = message));
+      await this.speakResponse(message);
+    }
+  }
+
+  private mostrarResposta(normalized: string, resposta: string, status = 'Comando reconhecido'): void {
+    this.ngZone.run(() => {
+      this.recognizedCommand = normalized;
+      this.commandResponse = resposta;
+      this.statusText = status;
+    });
   }
 
   private async handleExitAppRequest(normalized: string): Promise<void> {
@@ -710,7 +934,8 @@ export class HomePage {
       '- Se a pergunta estiver ambígua ou incompleta (o reconhecimento de voz pode errar palavras), interprete o mais provável ou faça uma pergunta curta.',
       '- Se não souber algo ou não tiver acesso a dados em tempo real, diga isso com naturalidade, sem inventar.',
       '- Não diga que é um modelo de linguagem, a menos que perguntem.',
-      '- Quando o usuário pedir uma ação que existe nas suas funções (fechar o aplicativo, lanterna, previsão do tempo, repetir, salvar a resposta), chame a função em vez de responder com texto, mesmo que ele use outras palavras. Se pedir algo que nenhuma função faz, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
+      '- Quando o usuário pedir uma ação que existe nas suas funções (fechar o aplicativo, lanterna, previsão do tempo, distância e tempo de viagem, caminho no mapa, lugar mais próximo, repetir, salvar a resposta), chame a função em vez de responder com texto, mesmo que ele use outras palavras. Se pedir algo que nenhuma função faz, como alarmes, mensagens ou ligações, explique com gentileza que ainda não consegue fazer.',
+      '- Você sabe onde o usuário está por meio das funções: para perguntas com "daqui", "aqui", "perto de mim", distâncias, rotas ou clima, chame a função em vez de dizer que não sabe a localização.',
       `Agora é ${agora}.`,
     ].join('\n');
   }
@@ -765,19 +990,110 @@ export class HomePage {
         required: ['ligar'],
       },
     },
-    { name: 'previsao_do_tempo', description: 'Diz a previsão do tempo para o local atual do usuário.' },
+    {
+      name: 'previsao_do_tempo',
+      description:
+        'Previsão do tempo (chuva, sol, frio, calor, temperatura) para hoje ou os próximos dias, no local atual do usuário ou numa cidade citada.',
+      parameters: {
+        type: 'object',
+        properties: {
+          dia: {
+            type: 'string',
+            description: 'Dia perguntado, em português: "hoje", "amanhã", "depois de amanhã", "sábado", "fim de semana". Vazio se não disse.',
+          },
+          cidade: { type: 'string', description: 'Cidade citada pelo usuário. Vazio para o local onde ele está.' },
+          assunto: { type: 'string', enum: ['chuva', 'sol', 'frio', 'calor', 'temperatura', 'geral'] },
+        },
+      },
+    },
+    {
+      name: 'distancia_e_tempo_de_viagem',
+      description:
+        'Calcula a distância e o tempo de viagem do local atual do usuário (ou de uma origem citada) até um destino: endereço, rua, bairro, cidade ou lugar conhecido.',
+      parameters: {
+        type: 'object',
+        properties: {
+          destino: { type: 'string', description: 'Destino como o usuário falou, com a cidade se ele disse.' },
+          origem: { type: 'string', description: 'Só se o usuário citou um ponto de partida diferente de onde ele está.' },
+          modo: { type: 'string', enum: ['carro', 'a_pe', 'bicicleta', 'transporte'] },
+          foco: { type: 'string', enum: ['tempo', 'distancia'], description: 'O que o usuário quer saber principalmente.' },
+        },
+        required: ['destino'],
+      },
+    },
+    {
+      name: 'abrir_rota_no_mapa',
+      description: 'Abre o Google Maps com o caminho até um destino ("como chego em...", "me leva até...").',
+      parameters: {
+        type: 'object',
+        properties: {
+          destino: { type: 'string', description: 'Destino como o usuário falou.' },
+          modo: { type: 'string', enum: ['carro', 'a_pe', 'bicicleta', 'transporte'] },
+        },
+        required: ['destino'],
+      },
+    },
+    {
+      name: 'lugar_mais_proximo',
+      description:
+        'Procura o estabelecimento mais próximo do usuário de um tipo (farmácia, posto de gasolina, hospital, padaria, mercado, restaurante...) e abre o caminho no Google Maps.',
+      parameters: {
+        type: 'object',
+        properties: { tipo: { type: 'string', description: 'Tipo de lugar, em português, ex.: "farmácia".' } },
+        required: ['tipo'],
+      },
+    },
     { name: 'repetir_ultima_resposta', description: 'Repete a última coisa que a Kira falou.' },
     { name: 'salvar_resposta', description: 'Salva a última resposta da Kira num arquivo de texto.' },
   ];
 
-  private acaoDaFuncao(nome: string, args: any): AsyncCommandKind | 'salvar' | null {
+  private acaoDaFuncao(nome: string, args: any): AcaoIA | null {
+    const texto = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    const modo = (v: unknown): ModoViagem =>
+      v === 'a_pe' || v === 'bicicleta' || v === 'transporte' ? v : 'carro';
+    const ehAqui = (v?: string) => !v || /^(aqui|daqui|local atual|minha localizacao|onde (eu )?estou)$/.test(normalizar(v));
+
     switch (nome) {
+      case 'previsao_do_tempo': {
+        const { dias, explicito } = diasDoTexto(texto(args?.dia));
+        const assuntos = ['chuva', 'sol', 'frio', 'calor', 'temperatura', 'geral'];
+        const cidade = texto(args?.cidade);
+        return {
+          tipo: 'tempo',
+          pedido: {
+            dias,
+            diaExplicito: explicito,
+            cidade: ehAqui(cidade) ? undefined : cidade,
+            foco: assuntos.includes(args?.assunto) ? args.assunto : 'geral',
+          },
+        };
+      }
+      case 'distancia_e_tempo_de_viagem': {
+        const destino = texto(args?.destino);
+        const origem = texto(args?.origem);
+        if (!destino) return null;
+        return {
+          tipo: 'distancia',
+          destino,
+          origem: ehAqui(origem) ? undefined : origem,
+          modo: modo(args?.modo),
+          foco: args?.foco === 'distancia' ? 'distancia' : 'tempo',
+        };
+      }
+      case 'abrir_rota_no_mapa': {
+        const destino = texto(args?.destino);
+        return destino ? { tipo: 'rota', destino, modo: modo(args?.modo) } : { tipo: 'abrirMapa' };
+      }
+      case 'lugar_mais_proximo': {
+        const tipo = texto(args?.tipo);
+        if (!tipo) return null;
+        const categoria = encontrarCategoria(tipo);
+        return { tipo: 'proximo', categoria, termo: categoria?.busca ?? tipo };
+      }
       case 'fechar_aplicativo':
         return 'exitApp';
       case 'lanterna':
         return args?.ligar === false ? 'torchOff' : 'torchOn';
-      case 'previsao_do_tempo':
-        return 'weather';
       case 'repetir_ultima_resposta':
         return 'repeat';
       case 'salvar_resposta':

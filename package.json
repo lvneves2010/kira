@@ -1,6 +1,6 @@
 {
   "name": "kira",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "author": "Help Soluções em Informática (HSI)",
   "scripts": {
     "ng": "ng",
@@ -29,6 +29,7 @@
     "@capacitor-community/text-to-speech": "^8.0.2",
     "@capacitor/android": "^8.4.0",
     "@capacitor/app": "8.1.0",
+    "@capacitor/app-launcher": "^8.0.1",
     "@capacitor/core": "8.4.0",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/geolocation": "^8.2.0",
