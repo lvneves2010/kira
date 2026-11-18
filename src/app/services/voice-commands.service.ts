@@ -133,7 +133,20 @@ export class VoiceCommandsService {
 
   match(normalized: string): VoiceCommandMatch {
     const words = this.canonizar(normalized);
-    const entry = this.padroes.find(({ padroes }) => padroes.some(p => this.containsPhrase(words, p)))?.command;
+
+    // Se mais de um comando casar, vence o padrão mais longo (o mais específico):
+    // em "obrigado, pode fechar o app", "pode fechar o app" ganha de "obrigado".
+    // Empate: fica o que vem primeiro no JSON.
+    let entry: VoiceCommandEntry | undefined;
+    let maiorPadrao = 0;
+    for (const { command, padroes } of this.padroes) {
+      for (const padrao of padroes) {
+        if (padrao.length > maiorPadrao && this.containsPhrase(words, padrao)) {
+          entry = command;
+          maiorPadrao = padrao.length;
+        }
+      }
+    }
 
     if (!entry) {
       return FALLBACK_RESPONSE;
