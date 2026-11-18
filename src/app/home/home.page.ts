@@ -202,13 +202,18 @@ export class HomePage {
     this.speechRecognition = new SpeechRecognition();
     this.speechRecognition.lang = 'pt-BR';
     this.speechRecognition.interimResults = false;
-    this.speechRecognition.maxAlternatives = 1;
+    // Várias alternativas: uma palavra curta como "Kira" às vezes só aparece na segunda.
+    this.speechRecognition.maxAlternatives = 5;
 
     this.isListeningForCommand = true;
     this.statusText = 'Escutando... fale agora.';
 
     this.speechRecognition.onresult = async (event: any) => {
-      const transcript = (event.results[0][0].transcript || '').toLowerCase().trim();
+      const alternativas: string[] = Array.from(event.results[0] as ArrayLike<any>).map(a =>
+        (a?.transcript || '').toLowerCase().trim()
+      );
+      console.log('diagnostic: speech alternativas=', JSON.stringify(alternativas));
+      const transcript = this.escolherAlternativa(alternativas);
       console.log('diagnostic: speech transcript=', transcript);
       const normalized = this.normalizeTranscript(transcript);
       console.log('diagnostic: normalized transcript=', normalized);
@@ -216,8 +221,8 @@ export class HomePage {
     };
 
     this.speechRecognition.onerror = (ev: any) => {
-      console.warn('diagnostic: speech error', ev);
       const erro = ev.error || ev.message || String(ev);
+      console.warn('diagnostic: speech error=', erro);
       this.ngZone.run(() => {
         // Silêncio ou fala não reconhecida é normal: só avisa no status, sem alerta.
         if (erro === 'no-speech' || erro === 'no-match' || erro === 'aborted') {
@@ -929,7 +934,8 @@ export class HomePage {
       '- Português do Brasil, tom natural e acolhedor, como uma amiga que entende do assunto.',
       '- Seja breve: em geral uma a três frases. Só se estenda se o usuário pedir detalhes.',
       '- Nada de markdown, listas, tópicos, títulos, emojis, links ou tabelas. Se houver vários itens, cite-os numa frase corrida.',
-      '- Escreva números, siglas e símbolos do jeito que se fala quando isso ajudar a leitura (ex.: "vinte graus", não "20°C").',
+      '- Escreva números com algarismos, nunca por extenso (ex.: "em 1500", "20°C", "35%", "14h30", "R$ 10,50"): o app converte para a fala.',
+      '- Siglas e outros símbolos, escreva do jeito que se fala.',
       '- Vá direto ao ponto. Não repita a pergunta e não comece sempre com "Claro" ou "Ótima pergunta".',
       '- Varie as palavras e pode usar expressões leves do dia a dia, sem exagerar nas gírias.',
       '- Se a pergunta estiver ambígua ou incompleta (o reconhecimento de voz pode errar palavras), interprete o mais provável ou faça uma pergunta curta.',
@@ -961,6 +967,18 @@ export class HomePage {
   // (kyra, kiara, quira...) ou antepõe uma palavra de preenchimento antes dela,
   // então aceitamos variações e procuramos o gatilho nas duas primeiras palavras.
   private static readonly KIRA_TRIGGER_WORDS = ['kira', 'kyra', 'kiara', 'quira', 'kirah'];
+
+  /**
+   * Fica com a primeira alternativa do reconhecimento, a não ser que ela não tenha o nome
+   * da Kira e outra alternativa seja só o chamado ("Kira"): aí a outra vence.
+   */
+  private escolherAlternativa(alternativas: string[]): string {
+    const primeira = alternativas[0] ?? '';
+    if (this.matchKiraTrigger(this.normalizeTranscript(primeira)) !== null) {
+      return primeira;
+    }
+    return alternativas.find(a => this.matchKiraTrigger(this.normalizeTranscript(a)) === '') ?? primeira;
+  }
 
   private matchKiraTrigger(normalized: string): string | null {
     const words = normalized.split(' ').filter(Boolean);
