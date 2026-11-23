@@ -19,6 +19,7 @@ import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -38,7 +39,9 @@ import kotlin.jvm.functions.Function1;
  * - 12 passos de síntese: com 5 (padrão do sherpa) a fala sai truncada;
  * - sem semente fixa: com semente fixa apareciam trechos repetidos ("loop");
  * - frase por frase: o áudio de cada frase vai para a fila de reprodução assim que fica pronto,
- *   então a fala começa antes de a resposta inteira ser gerada.
+ *   então a fala começa antes de a resposta inteira ser gerada;
+ * - frases longas divididas nas vírgulas (2026-11-23): o Supertonic só entrega o áudio com o
+ *   trecho inteiro pronto, então uma frase de 18 s demorava ~3,5 s para começar a ser falada.
  */
 @CapacitorPlugin(name = "KiraVoz")
 public class KiraVozPlugin extends Plugin {
@@ -49,6 +52,17 @@ public class KiraVozPlugin extends Plugin {
     private static final String PASSOS = "12";
     /** Pausa entre frases, em segundos. */
     private static final float PAUSA_ENTRE_FRASES = 0.18f;
+    /**
+     * Pausa onde uma frase longa foi dividida na vírgula, em segundos. Somada às margens que
+     * sobram depois de aparar o silêncio das pontas, dá ~0,2 s, como uma vírgula falada.
+     */
+    private static final float PAUSA_NA_VIRGULA = 0.10f;
+    /** Margem de silêncio mantida ao aparar uma ponta, para não cortar "s"/"f" fracos. */
+    private static final float MARGEM_AO_APARAR = 0.05f;
+    /** Acima deste tamanho (em caracteres), a frase é dividida nas vírgulas. */
+    private static final int FRASE_LONGA = 60;
+    /** Pedaços menores que isso se juntam ao seguinte (pedaço muito curto soa estranho). */
+    private static final int PEDACO_MINIMO = 20;
 
     /** Uma fala por vez, sempre na mesma thread (o motor não é thread-safe). */
     private final ExecutorService fila = Executors.newSingleThreadExecutor();
@@ -97,21 +111,34 @@ public class KiraVozPlugin extends Plugin {
                 threadTocador.start();
 
                 GenerationConfig config = configuracao(velocidade);
-                AoGerarPedaco aoGerar = new AoGerarPedaco(tocador, minhaFala);
-                float[] pausa = new float[(int) (tts.sampleRate() * PAUSA_ENTRE_FRASES)];
+                int taxa = tts.sampleRate();
+                AoGerarPedaco aoGerar = new AoGerarPedaco(minhaFala);
+                float[] pausa = new float[(int) (taxa * PAUSA_ENTRE_FRASES)];
+                float[] pausaNaVirgula = new float[(int) (taxa * PAUSA_NA_VIRGULA)];
 
-                List<String> frases = dividirEmFrases(texto);
-                for (int i = 0; i < frases.size() && minhaFala == falaAtual.get(); i++) {
-                    long inicioFrase = SystemClock.elapsedRealtime();
-                    long amostrasAntes = tocador.totalAmostras;
-                    tts.generateWithConfigAndCallback(frases.get(i), config, aoGerar);
-                    if (i < frases.size() - 1) {
-                        tocador.adicionar(pausa);
+                // Frases longas vão em pedaços (divididos nas vírgulas): o primeiro pedaço fica
+                // pronto logo e a fala começa enquanto o resto ainda está sendo gerado.
+                List<Trecho> trechos = dividirEmTrechos(texto);
+                for (int i = 0; i < trechos.size() && minhaFala == falaAtual.get(); i++) {
+                    Trecho trecho = trechos.get(i);
+                    long inicioTrecho = SystemClock.elapsedRealtime();
+                    aoGerar.recomecar();
+                    tts.generateWithConfigAndCallback(trecho.texto, config, aoGerar);
+                    if (minhaFala != falaAtual.get()) {
+                        break;
                     }
-                    long ms = SystemClock.elapsedRealtime() - inicioFrase;
-                    double segundos = (tocador.totalAmostras - amostrasAntes) / (double) tts.sampleRate();
-                    Log.i(TAG, String.format(Locale.ROOT, "frase \"%s\": %.1fs de áudio em %d ms (RTF %.2f)",
-                            frases.get(i), segundos, ms, ms / 1000.0 / Math.max(segundos, 0.01)));
+                    // O modelo põe ~0,2 s de silêncio no começo e ~0,25 s no fim de cada trecho.
+                    // Nas emendas de vírgula isso viraria uma pausa de meio segundo; aparamos.
+                    boolean aparaInicio = i == 0 || trechos.get(i - 1).meioDaFrase;
+                    float[] audioTrecho = aparar(aoGerar.juntar(), taxa, aparaInicio, trecho.meioDaFrase);
+                    tocador.adicionar(audioTrecho);
+                    if (i < trechos.size() - 1) {
+                        tocador.adicionar(trecho.meioDaFrase ? pausaNaVirgula : pausa);
+                    }
+                    long ms = SystemClock.elapsedRealtime() - inicioTrecho;
+                    double segundos = audioTrecho.length / (double) taxa;
+                    Log.i(TAG, String.format(Locale.ROOT, "trecho \"%s\": %.1fs de áudio em %d ms (RTF %.2f)",
+                            trecho.texto, segundos, ms, ms / 1000.0 / Math.max(segundos, 0.01)));
                 }
 
                 tocador.terminar();
@@ -210,20 +237,119 @@ public class KiraVozPlugin extends Plugin {
         return frases;
     }
 
+    /** Pedaço de texto gerado de uma vez. {@code meioDaFrase}: termina numa vírgula, a frase continua. */
+    static final class Trecho {
+        final String texto;
+        final boolean meioDaFrase;
+
+        Trecho(String texto, boolean meioDaFrase) {
+            this.texto = texto;
+            this.meioDaFrase = meioDaFrase;
+        }
+
+        @Override
+        public String toString() {
+            return (meioDaFrase ? "~" : "") + "[" + texto + "]";
+        }
+    }
+
     /**
-     * Recebe cada pedaço de áudio gerado e manda para o tocador.
+     * Divide em frases e, as longas (mais de {@link #FRASE_LONGA} caracteres), nas vírgulas,
+     * ponto e vírgula e dois-pontos seguidos de espaço ("28,5" não divide). Pedaços com menos de
+     * {@link #PEDACO_MINIMO} caracteres se juntam ao seguinte; um último pedaço curto volta para o anterior.
+     */
+    static List<Trecho> dividirEmTrechos(String texto) {
+        List<Trecho> trechos = new ArrayList<>();
+        for (String frase : dividirEmFrases(texto)) {
+            if (frase.length() <= FRASE_LONGA) {
+                trechos.add(new Trecho(frase, false));
+                continue;
+            }
+            List<String> pedacos = new ArrayList<>();
+            StringBuilder atual = new StringBuilder();
+            for (String parte : frase.split("(?<=[,;:])\\s+")) {
+                if (atual.length() > 0) {
+                    atual.append(' ');
+                }
+                atual.append(parte.trim());
+                if (atual.length() >= PEDACO_MINIMO) {
+                    pedacos.add(atual.toString());
+                    atual.setLength(0);
+                }
+            }
+            if (atual.length() > 0) {
+                if (pedacos.isEmpty()) {
+                    pedacos.add(atual.toString());
+                } else {
+                    int ultimo = pedacos.size() - 1;
+                    pedacos.set(ultimo, pedacos.get(ultimo) + " " + atual);
+                }
+            }
+            for (int i = 0; i < pedacos.size(); i++) {
+                trechos.add(new Trecho(pedacos.get(i), i < pedacos.size() - 1));
+            }
+        }
+        return trechos;
+    }
+
+    /**
+     * Tira o silêncio de uma ou das duas pontas do áudio, deixando {@link #MARGEM_AO_APARAR}.
+     * Se não houver som nenhum, devolve o áudio como veio.
+     */
+    static float[] aparar(float[] amostras, int taxa, boolean inicio, boolean fim) {
+        final float limiar = 0.01f;
+        int primeiro = -1;
+        int ultimo = -1;
+        for (int i = 0; i < amostras.length; i++) {
+            if (Math.abs(amostras[i]) > limiar) {
+                if (primeiro < 0) {
+                    primeiro = i;
+                }
+                ultimo = i;
+            }
+        }
+        if (primeiro < 0) {
+            return amostras;
+        }
+        int margem = (int) (taxa * MARGEM_AO_APARAR);
+        int de = inicio ? Math.max(0, primeiro - margem) : 0;
+        int ate = fim ? Math.min(amostras.length, ultimo + 1 + margem) : amostras.length;
+        return (de == 0 && ate == amostras.length) ? amostras : Arrays.copyOfRange(amostras, de, ate);
+    }
+
+    /**
+     * Junta o áudio de um trecho enquanto ele é gerado (o Supertonic entrega o trecho
+     * inteiro de uma vez); o trecho só vai para o tocador depois de aparado.
      *
      * Precisa ser uma classe com o método {@code Integer invoke(float[])} declarado:
      * a parte nativa do sherpa-onnx procura exatamente essa assinatura via JNI, e uma
      * lambda Java só teria a versão genérica {@code invoke(Object)} (o app fecha).
      */
     private final class AoGerarPedaco implements Function1<float[], Integer> {
-        private final Tocador tocador;
         private final int minhaFala;
+        private final List<float[]> pedacos = new ArrayList<>();
+        private int total;
 
-        AoGerarPedaco(Tocador tocador, int minhaFala) {
-            this.tocador = tocador;
+        AoGerarPedaco(int minhaFala) {
             this.minhaFala = minhaFala;
+        }
+
+        void recomecar() {
+            pedacos.clear();
+            total = 0;
+        }
+
+        float[] juntar() {
+            if (pedacos.size() == 1) {
+                return pedacos.get(0);
+            }
+            float[] tudo = new float[total];
+            int pos = 0;
+            for (float[] p : pedacos) {
+                System.arraycopy(p, 0, tudo, pos, p.length);
+                pos += p.length;
+            }
+            return tudo;
         }
 
         @Override
@@ -231,7 +357,8 @@ public class KiraVozPlugin extends Plugin {
             if (minhaFala != falaAtual.get()) {
                 return 0; // interrompe a geração
             }
-            tocador.adicionar(amostras);
+            pedacos.add(amostras);
+            total += amostras.length;
             return 1;
         }
     }

@@ -53,6 +53,8 @@ Tudo fica em `src/app/services/voz.service.ts`, e a escolha é feita no menu de 
   - Plugin nativo: `android/app/src/main/java/br/com/hsi/kira/KiraVozPlugin.java`, registrado no `MainActivity`.
   - **Os arquivos ficam fora do git:** o modelo (~96 MB, em `android/app/src/main/assets/supertonic/`) e o `.aar` do sherpa-onnx (~49 MB, em `android/app/libs/`). Recrie com `python scripts/preparar_voz_natural.py`. Sem eles, o build do Android falha.
   - Configuração validada em testes: `sid` 2 (F3), `lang=pt`, **12 passos** (com 5 a fala sai truncada) e **sem semente fixa** (com ela aparecem trechos em loop). O texto é gerado frase por frase.
+  - Frases com mais de 60 caracteres são divididas nas vírgulas, porque o Supertonic só entrega o áudio com o trecho inteiro pronto. O silêncio das pontas é aparado nessas emendas, e a pausa fica em ~0,2 s. Com isso o primeiro som de uma resposta longa caiu de ~3,5 s para 0,7–1,4 s.
+  - **Supertonic 3, testada e descartada (2026-11-23):** a voz F5 (sid 4) soa melhor, mas no Xiaomi ela leva 0,8–1,0 s para gerar cada segundo de fala (a v2 leva 0,2 s), e o modelo passa de 96 para 145 MB. A F5 da v2 não soa igual à da v3.
   - No Xiaomi de testes, o primeiro som sai em ~0,7 s, com RTF de 0,2 a 0,4. O APK de debug tem ~160 MB.
   - **Licença OpenRAIL-M:** o uso comercial é permitido, mas as restrições de uso precisam ser repassadas ao usuário. Inclua isso nos termos e na política de privacidade antes da Play. A licença vai em `assets/supertonic/LICENSE-modelo.txt`, e o crédito aparece no menu.
   - **Rollback:** existe a tag `antes-supertonic`. Use `git revert --no-edit antes-supertonic..HEAD` (para reverter só os commits da voz, liste-os com `git log antes-supertonic..HEAD`) e apague as duas pastas acima.
